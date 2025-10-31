@@ -22,44 +22,31 @@ if (AUTH0_AUDIENCE) {
   jwtOptions.audience = AUTH0_AUDIENCE;
 }
 
-// Debug middleware to log token information
+// Debug middleware to log token information (development only)
 export const debugAuth = (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  console.log('\n=== Auth Debug ===');
-  console.log('Method:', req.method);
-  console.log('Original URL:', req.originalUrl);
-  console.log('Path:', req.path);
-  console.log('Base URL:', req.baseUrl);
-  console.log('Authorization header present:', !!authHeader);
-  
-  if (authHeader) {
-    const token = authHeader.replace('Bearer ', '').trim();
-    console.log('Token length:', token.length);
-    
-    try {
-      // Decode without verification to inspect structure
-      const parts = token.split('.');
-      if (parts.length === 3) {
-        const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
-        console.log('Token payload:', {
-          sub: payload.sub,
-          iss: payload.iss,
-          aud: payload.aud || 'no audience',
-          exp: new Date(payload.exp * 1000).toISOString(),
-          iat: new Date(payload.iat * 1000).toISOString(),
-          hasEmail: !!payload.email,
-          hasName: !!payload.name
-        });
-      } else {
-        console.log('Token is not a valid JWT (does not have 3 parts)');
-      }
-    } catch (e) {
-      console.log('Token decode error:', e.message);
-    }
-  } else {
-    console.log('No Authorization header found');
+  if (process.env.NODE_ENV !== 'development') {
+    return next();
   }
-  console.log('=================\n');
+  
+  const authHeader = req.headers.authorization;
+  if (!authHeader) {
+    return next();
+  }
+  
+  const token = authHeader.replace('Bearer ', '').trim();
+  try {
+    const parts = token.split('.');
+    if (parts.length === 3) {
+      const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
+      console.log('Auth token:', {
+        sub: payload.sub,
+        aud: payload.aud,
+        exp: new Date(payload.exp * 1000).toISOString()
+      });
+    }
+  } catch (e) {
+    // Ignore decode errors
+  }
   next();
 };
 
@@ -95,8 +82,6 @@ export const attachUser = async (req, res, next) => {
       });
     }
 
-    console.log('Token verified successfully');
-    
     // Extract all available user info from token
     // Access tokens may not have user info, so check multiple possible claim locations
     let email = decoded.email;
@@ -117,32 +102,15 @@ export const attachUser = async (req, res, next) => {
           
           if (userinfoResponse.ok) {
             const userinfo = await userinfoResponse.json();
-            console.log('Fetched userinfo from Auth0:', {
-              email: userinfo.email || 'not in userinfo',
-              name: userinfo.name || userinfo.given_name || 'not in userinfo'
-            });
             email = email || userinfo.email;
             name = name || userinfo.name || userinfo.given_name || userinfo.nickname;
             picture = picture || userinfo.picture;
           }
         }
       } catch (err) {
-        console.warn('⚠️ Could not fetch userinfo from Auth0:', err.message);
+        console.warn('Could not fetch userinfo from Auth0:', err.message);
       }
     }
-    
-    // Log all available claims for debugging
-    console.log('Available token claims:', Object.keys(decoded).filter(key => 
-      !['iss', 'sub', 'aud', 'iat', 'exp', 'nonce', 'sid', 'azp'].includes(key)
-    ));
-    
-    console.log('Final user info:', {
-      sub: decoded.sub,
-      email: email || 'not available',
-      name: name || 'not available',
-      picture: picture || 'not available',
-      email_verified: decoded.email_verified || 'not in token'
-    });
     
     // Attach user info to request
     req.auth0Id = decoded.sub; // Auth0 user ID (always present)
@@ -152,7 +120,7 @@ export const attachUser = async (req, res, next) => {
     
     next();
   } catch (error) {
-    console.error('❌ Error in attachUser:', error);
+    console.error('Error in attachUser:', error);
     return res.status(401).json({
       success: false,
       message: "Invalid or expired token",
