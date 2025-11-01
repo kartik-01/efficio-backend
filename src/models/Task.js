@@ -2,10 +2,9 @@ import mongoose from "mongoose";
 
 const taskSchema = new mongoose.Schema(
   {
-    // Owner/Creator of the task
+    // Owner/Creator of the task (using auth0Id as primary identifier)
     userId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
+      type: String,
       required: [true, "User ID is required"],
       index: true,
     },
@@ -58,12 +57,11 @@ const taskSchema = new mongoose.Schema(
       default: false,
     },
     // Future: Collaboration features
-    // Array of user IDs who have access to this task
+    // Array of user IDs who have access to this task (using auth0Id)
     collaborators: [
       {
         user: {
-          type: mongoose.Schema.Types.ObjectId,
-          ref: "User",
+          type: String, // auth0Id
         },
         role: {
           type: String,

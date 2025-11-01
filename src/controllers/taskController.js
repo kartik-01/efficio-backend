@@ -97,12 +97,10 @@ export const getTasks = async (req, res) => {
     // Get user's own tasks and shared tasks where user is a collaborator
     const tasks = await Task.find({
       $or: [
-        { userId: user._id }, // User's own tasks
-        { "collaborators.user": user._id }, // Tasks where user is a collaborator
+        { userId: req.auth0Id }, // User's own tasks (using auth0Id)
+        { "collaborators.user": req.auth0Id }, // Tasks where user is a collaborator
       ],
     })
-      .populate("userId", "name email picture")
-      .populate("collaborators.user", "name email picture")
       .sort({ createdAt: -1 });
 
     res.status(200).json({
@@ -132,12 +130,10 @@ export const getTaskById = async (req, res) => {
     const task = await Task.findOne({
       _id: req.params.id,
       $or: [
-        { userId: user._id }, // User owns the task
-        { "collaborators.user": user._id }, // User is a collaborator
+        { userId: req.auth0Id }, // User owns the task (using auth0Id)
+        { "collaborators.user": req.auth0Id }, // User is a collaborator
       ],
-    })
-      .populate("userId", "name email picture")
-      .populate("collaborators.user", "name email picture");
+    });
 
     if (!task) {
       return res.status(404).json({
@@ -170,16 +166,13 @@ export const createTask = async (req, res) => {
       req.userPicture
     );
 
-    // Create task with userId
+    // Create task with userId (using auth0Id)
     const taskData = {
       ...req.body,
-      userId: user._id,
+      userId: req.auth0Id,
     };
 
     const task = await Task.create(taskData);
-    
-    // Populate user info in response
-    await task.populate("userId", "name email picture");
 
     res.status(201).json({
       success: true,
@@ -210,8 +203,8 @@ export const updateTask = async (req, res) => {
     const task = await Task.findOne({
       _id: req.params.id,
       $or: [
-        { userId: user._id }, // User owns the task
-        { "collaborators.user": user._id, "collaborators.role": { $in: ["editor", "admin"] } }, // User has edit access
+        { userId: req.auth0Id }, // User owns the task (using auth0Id)
+        { "collaborators.user": req.auth0Id, "collaborators.role": { $in: ["editor", "admin"] } }, // User has edit access
       ],
     });
 
@@ -238,8 +231,7 @@ export const updateTask = async (req, res) => {
         new: true,
         runValidators: true,
       }
-    ).populate("userId", "name email picture")
-     .populate("collaborators.user", "name email picture");
+    );
 
     res.status(200).json({
       success: true,
@@ -269,7 +261,7 @@ export const deleteTask = async (req, res) => {
     // Only owner can delete tasks
     const task = await Task.findOneAndDelete({
       _id: req.params.id,
-      userId: user._id, // Only owner can delete
+      userId: req.auth0Id, // Only owner can delete (using auth0Id)
     });
 
     if (!task) {
@@ -309,8 +301,8 @@ export const updateTaskStatus = async (req, res) => {
     const task = await Task.findOne({
       _id: req.params.id,
       $or: [
-        { userId: user._id },
-        { "collaborators.user": user._id, "collaborators.role": { $in: ["editor", "admin"] } },
+        { userId: req.auth0Id },
+        { "collaborators.user": req.auth0Id, "collaborators.role": { $in: ["editor", "admin"] } },
       ],
     });
 
@@ -332,7 +324,7 @@ export const updateTaskStatus = async (req, res) => {
         new: true,
         runValidators: true,
       }
-    ).populate("userId", "name email picture");
+    );
 
     res.status(200).json({
       success: true,
@@ -365,8 +357,8 @@ export const updateTaskProgress = async (req, res) => {
     const task = await Task.findOne({
       _id: req.params.id,
       $or: [
-        { userId: user._id },
-        { "collaborators.user": user._id, "collaborators.role": { $in: ["editor", "admin"] } },
+        { userId: req.auth0Id },
+        { "collaborators.user": req.auth0Id, "collaborators.role": { $in: ["editor", "admin"] } },
       ],
     });
 
@@ -384,7 +376,7 @@ export const updateTaskProgress = async (req, res) => {
         new: true,
         runValidators: true,
       }
-    ).populate("userId", "name email picture");
+    );
 
     res.status(200).json({
       success: true,
