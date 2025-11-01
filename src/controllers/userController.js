@@ -18,8 +18,9 @@ export const getOrCreateUser = async (req, res) => {
         lastLogin: new Date(),
       });
     } else {
-      // Update last login
+      // Update last login and set user as active (logged in)
       user.lastLogin = new Date();
+      user.isActive = true;
       await user.save();
     }
 
@@ -98,6 +99,35 @@ export const updateUser = async (req, res) => {
     res.status(400).json({
       success: false,
       message: "Error updating user",
+      error: error.message,
+    });
+  }
+};
+
+// Logout user (set isActive to false)
+export const logoutUser = async (req, res) => {
+  try {
+    const user = await User.findOneAndUpdate(
+      { auth0Id: req.auth0Id },
+      { isActive: false },
+      { new: true, runValidators: true }
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "User logged out successfully",
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Error logging out user",
       error: error.message,
     });
   }

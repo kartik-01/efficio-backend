@@ -9,8 +9,8 @@ const getOrCreateUserFromAuth = async (auth0Id, email, name, picture) => {
     // Create user with all available info
     user = await User.create({
       auth0Id,
-      email: email || undefined,
-      name: name || undefined,
+      email: email,
+      name: name,
       picture: picture || undefined,
       lastLogin: new Date(),
     });
@@ -35,7 +35,9 @@ const getOrCreateUserFromAuth = async (auth0Id, email, name, picture) => {
       user.picture = picture;
       updated = true;
     }
+    // Update last login and set user as active (logged in)
     user.lastLogin = new Date();
+    user.isActive = true;
     await user.save();
     if (updated) {
       console.log('Updated user info:', { auth0Id, email, name });
@@ -167,9 +169,11 @@ export const createTask = async (req, res) => {
     );
 
     // Create task with userId (using auth0Id)
+    // Always override userId from request body to use auth0Id
+    const { userId, ...restBody } = req.body;
     const taskData = {
-      ...req.body,
-      userId: req.auth0Id,
+      ...restBody,
+      userId: req.auth0Id, // Always use auth0Id, never trust userId from client
     };
 
     const task = await Task.create(taskData);

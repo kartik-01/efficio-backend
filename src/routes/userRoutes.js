@@ -3,6 +3,7 @@ import {
   getOrCreateUser,
   getCurrentUser,
   updateUser,
+  logoutUser,
 } from "../controllers/userController.js";
 import { authenticate } from "../middleware/auth.js";
 
@@ -19,5 +20,8 @@ router.get("/profile", getCurrentUser);
 
 // Update user profile
 router.put("/profile", updateUser);
+
+// Logout user (set isActive to false)
+router.post("/logout", logoutUser);
 
 export default router;
