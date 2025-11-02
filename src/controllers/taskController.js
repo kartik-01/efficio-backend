@@ -1,46 +1,78 @@
 import Task from "../models/Task.js";
 import User from "../models/User.js";
 
-// Helper function to get or create user
+// Helper function to get or create user - using atomic operation to prevent duplicates
 const getOrCreateUserFromAuth = async (auth0Id, email, name, picture) => {
-  let user = await User.findOne({ auth0Id });
+  let user;
   
-  if (!user) {
-    // Create user with all available info
-    user = await User.create({
-      auth0Id,
-      email: email,
-      name: name,
-      picture: picture || undefined,
-      lastLogin: new Date(),
-    });
-    console.log('Created new user:', { 
-      auth0Id, 
-      email: email || 'not provided',
-      name: name || 'not provided',
-      picture: picture ? 'provided' : 'not provided'
-    });
-  } else {
-    // Always update email/name/picture if provided (in case user updated their profile)
+  // Use findOneAndUpdate with upsert for truly atomic operation
+  // This prevents race conditions that could create duplicate users
+  try {
+    user = await User.findOneAndUpdate(
+      { auth0Id },
+      {
+        // Always update these on existing users
+        $set: {
+          lastLogin: new Date(),
+          isOnline: true,
+        },
+        // Only set these on insert (when creating new user)
+        $setOnInsert: {
+          auth0Id,
+          email: email,
+          name: name,
+          picture: picture || undefined,
+          isActive: true,
+        },
+      },
+      {
+        upsert: true,
+        new: true,
+        setDefaultsOnInsert: true,
+        runValidators: true,
+      }
+    );
+
+    // Check if account was deactivated (user already existed)
+    if (!user.isActive) {
+      user.isActive = true;
+    }
+
+    // Only update missing fields if they don't exist (preserve customizations)
+    // Note: name is never updated from Auth0 after first login to preserve user customizations
     let updated = false;
-    if (email && email !== user.email) {
+    if (!user.email && email) {
       user.email = email;
       updated = true;
     }
-    if (name && name !== user.name) {
-      user.name = name;
-      updated = true;
-    }
-    if (picture && picture !== user.picture) {
+    if (!user.picture && !user.customPicture && picture) {
       user.picture = picture;
       updated = true;
     }
-    // Update last login and set user as active (logged in)
-    user.lastLogin = new Date();
-    user.isActive = true;
-    await user.save();
-    if (updated) {
-      console.log('Updated user info:', { auth0Id, email, name });
+
+    if (updated || !user.isActive) {
+      await user.save();
+      if (updated) {
+        console.log('Updated missing user info:', { auth0Id, email: email || 'not provided' });
+      }
+    }
+  } catch (error) {
+    // Handle duplicate key error (race condition edge case)
+    if (error.code === 11000 || error.codeName === 'DuplicateKey') {
+      // User was created by another request, find and return it
+      user = await User.findOne({ auth0Id });
+      if (!user) {
+        throw new Error("User creation failed due to duplicate key constraint");
+      }
+      // Update online status and reactivate if needed
+      if (!user.isActive) {
+        user.isActive = true;
+      }
+      user.lastLogin = new Date();
+      user.isOnline = true;
+      await user.save();
+    } else {
+      throw error;
     }
   }
   
@@ -395,4 +427,5 @@ export const updateTaskProgress = async (req, res) => {
     });
   }
 };
+
 

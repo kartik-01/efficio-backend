@@ -21,11 +21,14 @@ const userSchema = new mongoose.Schema(
     picture: {
       type: String, // Profile picture URL from Auth0
     },
+    customPicture: {
+      type: String, // Base64-encoded custom profile picture (stored in MongoDB)
+    },
     // User preferences (can be extended)
     preferences: {
       theme: {
         type: String,
-        enum: ["light", "dark"],
+        enum: ["light", "dark", "auto"],
         default: "light",
       },
       notifications: {
@@ -44,9 +47,15 @@ const userSchema = new mongoose.Schema(
     lastLogin: {
       type: Date,
     },
+    // Account status: true = active account, false = deactivated account
     isActive: {
       type: Boolean,
       default: true,
+    },
+    // Online status: true = currently logged in/online, false = logged out/offline
+    isOnline: {
+      type: Boolean,
+      default: false,
     },
   },
   {

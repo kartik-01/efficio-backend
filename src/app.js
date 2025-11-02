@@ -2,16 +2,22 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import { connectDB } from "./config/db.js";
+import { ensureUserIndexes } from "./utils/ensureIndexes.js";
 import userRoutes from "./routes/userRoutes.js";
 import taskRoutes from "./routes/taskRoutes.js";
 
 dotenv.config();
 
-// Connect to MongoDB (non-blocking, server will start even if connection fails initially)
-connectDB().catch(err => {
-  console.error('MongoDB connection error:', err.message);
-  console.log('Server will continue running, but database operations may fail');
-});
+// Connect to MongoDB and ensure indexes
+connectDB()
+  .then(async () => {
+    // Ensure unique indexes exist after connection
+    await ensureUserIndexes();
+  })
+  .catch(err => {
+    console.error('MongoDB connection error:', err.message);
+    console.log('Server will continue running, but database operations may fail');
+  });
 
 const app = express();
 
@@ -26,7 +32,9 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-app.use(express.json());
+// Increase body size limit to handle base64 image uploads (10MB should be enough)
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Logging middleware for debugging
 app.use((req, res, next) => {

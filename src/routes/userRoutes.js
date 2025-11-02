@@ -4,6 +4,9 @@ import {
   getCurrentUser,
   updateUser,
   logoutUser,
+  uploadProfilePicture,
+  deactivateAccount,
+  deleteAccount,
 } from "../controllers/userController.js";
 import { authenticate } from "../middleware/auth.js";
 
@@ -21,7 +24,16 @@ router.get("/profile", getCurrentUser);
 // Update user profile
 router.put("/profile", updateUser);
 
-// Logout user (set isActive to false)
+// Upload profile picture
+router.post("/profile/picture", uploadProfilePicture);
+
+// Logout user (set isOnline to false)
 router.post("/logout", logoutUser);
+
+// Deactivate account (keep data)
+router.post("/deactivate", deactivateAccount);
+
+// Delete account (permanently delete user and their tasks)
+router.delete("/account", deleteAccount);
 
 export default router;
