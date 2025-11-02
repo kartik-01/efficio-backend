@@ -94,6 +94,29 @@ const taskSchema = new mongoose.Schema(
       lowercase: true,
       index: true,
     },
+    // Array of user IDs (auth0Id) assigned to this task
+    assignedTo: [
+      {
+        type: String, // auth0Id
+      },
+    ],
+    // Store assigned user info (name, email) to display even after they exit the group
+    assignedUsers: [
+      {
+        userId: {
+          type: String, // auth0Id
+          required: true,
+        },
+        name: {
+          type: String,
+          required: true,
+        },
+        email: {
+          type: String,
+          required: false,
+        },
+      },
+    ],
     // Team/Project association (future feature)
     teamId: {
       type: mongoose.Schema.Types.ObjectId,

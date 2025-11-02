@@ -176,12 +176,16 @@ export const getTasks = async (req, res) => {
         };
       }
     } else {
-      // Show all accessible tasks: user's personal tasks + tasks from accessible groups
+      // "All Tasks" - show personal tasks AND only group tasks where user is assigned
       query = {
         $or: [
-          { userId: req.auth0Id, $or: [{ groupTag: "@personal" }, { groupTag: { $exists: false } }, { groupTag: null }] }, // User's personal tasks
-          { groupTag: { $in: accessibleGroupTags } }, // Tasks from groups user belongs to
-          { "collaborators.user": req.auth0Id }, // Tasks where user is a collaborator (legacy)
+          // User's personal tasks
+          { userId: req.auth0Id, $or: [{ groupTag: "@personal" }, { groupTag: { $exists: false } }, { groupTag: null }] },
+          // Group tasks where user is assigned (assignedTo includes current user)
+          { 
+            groupTag: { $in: accessibleGroupTags },
+            assignedTo: { $in: [req.auth0Id] }
+          },
         ],
       };
     }
@@ -263,7 +267,9 @@ export const createTask = async (req, res) => {
     }
     normalizedGroupTag = normalizedGroupTag.toLowerCase();
 
-    // If groupTag is provided and not @personal, verify user has access
+    let assignedUsersData = [];
+    
+    // If groupTag is provided and not @personal, verify user has access and get assigned user info
     if (normalizedGroupTag !== "@personal") {
       const group = await Group.findOne({
         tag: normalizedGroupTag,
@@ -279,12 +285,67 @@ export const createTask = async (req, res) => {
           message: "You don't have access to this group",
         });
       }
+
+      // If assignedTo is provided, get user info from group collaborators
+      if (restBody.assignedTo && Array.isArray(restBody.assignedTo) && restBody.assignedTo.length > 0) {
+        // Normalize assignedTo to ensure all values are strings (auth0Id)
+        const normalizedAssignedTo = restBody.assignedTo.map(id => id?.toString().trim()).filter(Boolean);
+        
+        for (const userId of normalizedAssignedTo) {
+          // Check if it's the owner
+          if (userId === group.owner || userId === group.owner.toString().trim()) {
+            const ownerUser = await User.findOne({ auth0Id: userId });
+            if (ownerUser) {
+              assignedUsersData.push({
+                userId: userId.toString().trim(), // Ensure it's stored as string
+                name: ownerUser.name || "Owner",
+                email: ownerUser.email || "",
+              });
+            }
+          } else {
+            // Check collaborators - normalize comparison
+            const collaborator = group.collaborators.find(c => 
+              (c.userId === userId || c.userId.toString().trim() === userId.toString().trim()) && 
+              c.status === "accepted"
+            );
+            if (collaborator) {
+              assignedUsersData.push({
+                userId: userId.toString().trim(), // Ensure it's stored as string
+                name: collaborator.name,
+                email: collaborator.email,
+              });
+            }
+          }
+        }
+        
+        // Update assignedTo to normalized values
+        taskData.assignedTo = normalizedAssignedTo;
+      }
+    } else if (restBody.assignedTo && Array.isArray(restBody.assignedTo) && restBody.assignedTo.length > 0) {
+      // For personal tasks, normalize and get user info from User model
+      const normalizedAssignedTo = restBody.assignedTo.map(id => id?.toString().trim()).filter(Boolean);
+      
+      for (const userId of normalizedAssignedTo) {
+        const userIdNormalized = userId.toString().trim();
+        const assignedUser = await User.findOne({ auth0Id: userIdNormalized });
+        if (assignedUser) {
+          assignedUsersData.push({
+            userId: userIdNormalized, // Store as normalized string
+            name: assignedUser.name || "User",
+            email: assignedUser.email || "",
+          });
+        }
+      }
+      
+      // Update assignedTo to normalized values
+      taskData.assignedTo = normalizedAssignedTo;
     }
 
     const taskData = {
       ...restBody,
       userId: req.auth0Id, // Always use auth0Id, never trust userId from client
       groupTag: normalizedGroupTag,
+      assignedUsers: assignedUsersData, // Store assigned user info
     };
 
     const task = await Task.create(taskData);
@@ -344,6 +405,65 @@ export const updateTask = async (req, res) => {
     // Prevent changing userId (ownership)
     const updateData = { ...req.body };
     delete updateData.userId;
+
+    // Handle assignedTo and assignedUsers update
+    if (updateData.assignedTo) {
+      let assignedUsersData = [];
+      
+      // Normalize assignedTo to ensure all values are strings (auth0Id)
+      const normalizedAssignedTo = Array.isArray(updateData.assignedTo) 
+        ? updateData.assignedTo.map(id => id?.toString().trim()).filter(Boolean)
+        : [];
+      
+      if (task.groupTag && task.groupTag !== "@personal") {
+        // Get group info for assigned users
+        const group = await Group.findOne({ tag: task.groupTag });
+        if (group) {
+          for (const userId of normalizedAssignedTo) {
+            const userIdNormalized = userId.toString().trim();
+            if (userIdNormalized === group.owner || userIdNormalized === group.owner.toString().trim()) {
+              const ownerUser = await User.findOne({ auth0Id: userIdNormalized });
+              if (ownerUser) {
+                assignedUsersData.push({
+                  userId: userIdNormalized, // Store as normalized string
+                  name: ownerUser.name || "Owner",
+                  email: ownerUser.email || "",
+                });
+              }
+            } else {
+              const collaborator = group.collaborators.find(c => 
+                (c.userId === userIdNormalized || c.userId.toString().trim() === userIdNormalized) && 
+                c.status === "accepted"
+              );
+              if (collaborator) {
+                assignedUsersData.push({
+                  userId: userIdNormalized, // Store as normalized string
+                  name: collaborator.name,
+                  email: collaborator.email,
+                });
+              }
+            }
+          }
+        }
+      } else {
+        // For personal tasks
+        for (const userId of normalizedAssignedTo) {
+          const userIdNormalized = userId.toString().trim();
+          const assignedUser = await User.findOne({ auth0Id: userIdNormalized });
+          if (assignedUser) {
+            assignedUsersData.push({
+              userId: userIdNormalized, // Store as normalized string
+              name: assignedUser.name || "User",
+              email: assignedUser.email || "",
+            });
+          }
+        }
+      }
+      
+      // Update assignedTo with normalized values
+      updateData.assignedTo = normalizedAssignedTo;
+      updateData.assignedUsers = assignedUsersData;
+    }
 
     // Handle groupTag update if provided
     if (updateData.groupTag) {
@@ -483,19 +603,104 @@ export const updateTaskStatus = async (req, res) => {
 
     const { status } = req.body;
 
-    // Find task and verify access
-    const task = await Task.findOne({
-      _id: req.params.id,
-      $or: [
-        { userId: req.auth0Id },
-        { "collaborators.user": req.auth0Id, "collaborators.role": { $in: ["editor", "admin"] } },
-      ],
-    });
+    // Find task first (without strict access check yet)
+    const task = await Task.findById(req.params.id);
 
     if (!task) {
       return res.status(404).json({
         success: false,
-        message: "Task not found or you don't have permission to update",
+        message: "Task not found",
+      });
+    }
+
+    // Check permissions based on group role
+    let hasPermission = false;
+    let userRole = null;
+
+    if (task.groupTag && task.groupTag !== "@personal") {
+      // For group tasks, check group membership and role
+      const group = await Group.findOne({
+        tag: task.groupTag,
+        $or: [
+          { owner: req.auth0Id },
+          { "collaborators.userId": req.auth0Id, "collaborators.status": "accepted" },
+        ],
+      });
+
+      if (!group) {
+        return res.status(403).json({
+          success: false,
+          message: "You don't have access to this group",
+        });
+      }
+
+      // Check if user is owner of the group
+      const isGroupOwner = group.owner === req.auth0Id;
+      
+      // Find user's role in the group
+      const collaborator = group.collaborators.find(
+        c => c.userId === req.auth0Id && c.status === "accepted"
+      );
+      userRole = isGroupOwner ? "owner" : (collaborator?.role || null);
+
+    // Check if user owns the task (normalize comparison)
+    const taskUserIdNormalized = task.userId ? task.userId.toString().trim() : '';
+    const currentUserIdNormalized = req.auth0Id.trim();
+    const userOwnsTask = taskUserIdNormalized && taskUserIdNormalized === currentUserIdNormalized;
+    
+    // Check if user is assigned to the task (normalize comparison)
+    const isAssignedToTask = task.assignedTo && Array.isArray(task.assignedTo) && 
+      task.assignedTo.some(assignedUserId => {
+        const assignedIdNormalized = assignedUserId ? assignedUserId.toString().trim() : '';
+        return assignedIdNormalized && assignedIdNormalized === currentUserIdNormalized;
+      });
+    
+    // Debug logging (development only)
+    if (process.env.NODE_ENV !== 'production' && userRole === "viewer") {
+      console.log('[updateTaskStatus] Permission check:', {
+        taskId: task._id,
+        taskUserId: taskUserIdNormalized,
+        currentUserId: currentUserIdNormalized,
+        userOwnsTask,
+        isAssignedToTask,
+        assignedTo: task.assignedTo,
+        userRole
+      });
+    }
+
+      // Viewers can only move their own tasks (by userId or assignedTo)
+      if (userRole === "viewer") {
+        if (!userOwnsTask && !isAssignedToTask) {
+          return res.status(403).json({
+            success: false,
+            message: "Viewers can only move their own tasks",
+          });
+        }
+        // Viewer owns or is assigned, allow
+        hasPermission = true;
+      }
+
+      // Editors, admins, and owners can move any task in the group
+      if (userRole === "editor" || userRole === "admin" || userRole === "owner") {
+        hasPermission = true;
+      }
+    } else {
+      // For personal tasks, check if user owns the task
+      hasPermission = task.userId === req.auth0Id;
+      
+      // Also check task collaborators
+      if (!hasPermission) {
+        const taskCollaborator = task.collaborators?.find(
+          c => c.user?.toString() === req.auth0Id && ["editor", "admin"].includes(c.role)
+        );
+        hasPermission = !!taskCollaborator;
+      }
+    }
+
+    if (!hasPermission) {
+      return res.status(403).json({
+        success: false,
+        message: "You don't have permission to update this task",
       });
     }
 

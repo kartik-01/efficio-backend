@@ -318,7 +318,7 @@ export const updateGroup = async (req, res) => {
   }
 };
 
-// Delete group - owner only
+// Delete group - owner only (cascade delete tasks and activities)
 export const deleteGroup = async (req, res) => {
   try {
     const user = await getOrCreateUserFromAuth(
@@ -328,7 +328,7 @@ export const deleteGroup = async (req, res) => {
       req.userPicture
     );
 
-    const group = await Group.findOneAndDelete({
+    const group = await Group.findOne({
       _id: req.params.id,
       owner: req.auth0Id, // Only owner can delete
     });
@@ -340,15 +340,20 @@ export const deleteGroup = async (req, res) => {
       });
     }
 
+    // Delete all tasks associated with this group
+    await Task.deleteMany({ groupTag: group.tag });
+
+    // Delete all activities associated with this group
+    await Activity.deleteMany({ groupTag: group.tag });
+
     // Remove group from all users' groups array
     await User.updateMany(
       { groups: req.params.id },
       { $pull: { groups: req.params.id } }
     );
 
-    // Optionally: Update or delete tasks associated with this group
-    // For now, we'll just update groupTag to "@personal" or leave as is
-    // You might want to delete tasks or reassign them
+    // Delete the group
+    await Group.findByIdAndDelete(req.params.id);
 
     res.status(200).json({
       success: true,
@@ -630,6 +635,80 @@ export const updateMemberRole = async (req, res) => {
     res.status(400).json({
       success: false,
       message: "Error updating member role",
+      error: error.message,
+    });
+  }
+};
+
+// Exit group - members can leave themselves
+export const exitGroup = async (req, res) => {
+  try {
+    const user = await getOrCreateUserFromAuth(
+      req.auth0Id,
+      req.userEmail,
+      req.userName,
+      req.userPicture
+    );
+
+    const group = await Group.findOne({
+      _id: req.params.id,
+      $or: [
+        { owner: req.auth0Id },
+        { "collaborators.userId": req.auth0Id, "collaborators.status": "accepted" },
+      ],
+    });
+
+    if (!group) {
+      return res.status(404).json({
+        success: false,
+        message: "Group not found or you're not a member",
+      });
+    }
+
+    // Cannot exit if you're the owner
+    if (group.owner === req.auth0Id) {
+      return res.status(400).json({
+        success: false,
+        message: "Owner cannot exit the group. Please delete the group instead.",
+      });
+    }
+
+    // Remove user from collaborators
+    group.collaborators = group.collaborators.filter(
+      c => c.userId !== req.auth0Id
+    );
+    await group.save();
+
+    // Remove group from user's groups array
+    const memberUser = await User.findOne({ auth0Id: req.auth0Id });
+    if (memberUser) {
+      await User.findByIdAndUpdate(
+        memberUser._id,
+        { $pull: { groups: group._id } },
+        { new: true }
+      );
+    }
+
+    // Create activity
+    await Activity.create({
+      type: "member_removed",
+      userId: req.auth0Id,
+      userName: req.userName || user.name || "Unknown",
+      groupTag: group.tag,
+      timestamp: new Date(),
+    });
+
+    const updatedGroup = await Group.findById(req.params.id);
+
+    res.status(200).json({
+      success: true,
+      data: updatedGroup,
+      message: "You have left the group",
+    });
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: "Error leaving group",
       error: error.message,
     });
   }

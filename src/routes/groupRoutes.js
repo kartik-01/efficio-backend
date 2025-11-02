@@ -11,6 +11,7 @@ import {
   updateMemberRole,
   removeMember,
   getGroupMembers,
+  exitGroup,
 } from "../controllers/groupController.js";
 import { authenticate } from "../middleware/auth.js";
 
@@ -25,16 +26,7 @@ router.post("/", createGroup);
 // Get all groups user belongs to and pending invitations
 router.get("/", getUserGroups);
 
-// Get single group by ID
-router.get("/:id", getGroupById);
-
-// Update group (name, tag, color) - owner or admin only
-router.put("/:id", updateGroup);
-
-// Delete group - owner only
-router.delete("/:id", deleteGroup);
-
-// Invite user to group
+// Invite user to group (must come before /:id routes)
 router.post("/:id/invite", inviteUser);
 
 // Accept group invitation
@@ -43,14 +35,26 @@ router.post("/:id/accept", acceptInvitation);
 // Decline group invitation
 router.post("/:id/decline", declineInvitation);
 
+// Exit group (members leave themselves) - must come before /:id routes
+router.post("/:id/exit", exitGroup);
+
+// Get all group members (must come before /:id routes)
+router.get("/:id/members", getGroupMembers);
+
 // Update member role
 router.put("/:id/members/:userId", updateMemberRole);
 
 // Remove member from group
 router.delete("/:id/members/:userId", removeMember);
 
-// Get all group members
-router.get("/:id/members", getGroupMembers);
+// Get single group by ID
+router.get("/:id", getGroupById);
+
+// Update group (name, tag, color) - owner or admin only
+router.put("/:id", updateGroup);
+
+// Delete group - owner only
+router.delete("/:id", deleteGroup);
 
 export default router;
 

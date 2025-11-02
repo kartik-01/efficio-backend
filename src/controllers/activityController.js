@@ -80,17 +80,21 @@ export const getActivities = async (req, res) => {
     // Build query
     const query = {};
 
+    // Get all accessible groups for user
+    const accessibleGroups = await Group.find({
+      $or: [
+        { owner: req.auth0Id },
+        { "collaborators.userId": req.auth0Id, "collaborators.status": "accepted" },
+      ],
+    });
+
+    const accessibleGroupTags = accessibleGroups.map(g => g.tag);
+
     // If groupTag is provided, filter by it
     if (groupTag) {
       // Verify user has access to this group
       if (groupTag !== "@personal") {
-        const group = await Group.findOne({
-          tag: groupTag,
-          $or: [
-            { owner: req.auth0Id },
-            { "collaborators.userId": req.auth0Id, "collaborators.status": "accepted" },
-          ],
-        });
+        const group = accessibleGroups.find(g => g.tag === groupTag);
 
         if (!group) {
           return res.status(403).json({
@@ -98,22 +102,33 @@ export const getActivities = async (req, res) => {
             message: "You don't have access to this group",
           });
         }
+
+        // For specific group, show all activities from that group
+        query.groupTag = groupTag;
+      } else {
+        // For personal, only show current user's personal activities
+        query.$and = [
+          { $or: [{ groupTag: "@personal" }, { groupTag: null }, { groupTag: { $exists: false } }] },
+          { userId: req.auth0Id }
+        ];
       }
-
-      query.groupTag = groupTag;
     } else {
-      // Get all accessible groups for user
-      const accessibleGroups = await Group.find({
-        $or: [
-          { owner: req.auth0Id },
-          { "collaborators.userId": req.auth0Id, "collaborators.status": "accepted" },
-        ],
-      });
-
-      const accessibleGroupTags = accessibleGroups.map(g => g.tag);
-
-      // Show activities from accessible groups and personal
-      query.groupTag = { $in: [...accessibleGroupTags, "@personal", null] };
+      // Show: 
+      // 1. Current user's personal activities
+      // 2. All activities from groups user is part of
+      query.$or = [
+        // Personal activities of current user only
+        {
+          $and: [
+            { $or: [{ groupTag: "@personal" }, { groupTag: null }, { groupTag: { $exists: false } }] },
+            { userId: req.auth0Id }
+          ]
+        },
+        // All activities from accessible groups (any user)
+        {
+          groupTag: { $in: accessibleGroupTags }
+        }
+      ];
     }
 
     const activities = await Activity.find(query)
