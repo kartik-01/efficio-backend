@@ -86,6 +86,14 @@ const taskSchema = new mongoose.Schema(
         trim: true,
       },
     ],
+    // Group/Workspace tag (e.g., "@personal", "@web-ui")
+    groupTag: {
+      type: String,
+      default: "@personal",
+      trim: true,
+      lowercase: true,
+      index: true,
+    },
     // Team/Project association (future feature)
     teamId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -107,6 +115,8 @@ taskSchema.index({ userId: 1, status: 1 });
 taskSchema.index({ isShared: 1 });
 taskSchema.index({ teamId: 1 });
 taskSchema.index({ projectId: 1 });
+taskSchema.index({ groupTag: 1, createdAt: -1 });
+taskSchema.index({ groupTag: 1, status: 1 });
 
 export default mongoose.model("Task", taskSchema);
 

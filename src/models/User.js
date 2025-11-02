@@ -43,6 +43,13 @@ const userSchema = new mongoose.Schema(
         ref: "Team",
       },
     ],
+    // Groups/Workspaces the user belongs to (accepted invitations only)
+    groups: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Group",
+      },
+    ],
     // Metadata
     lastLogin: {
       type: Date,

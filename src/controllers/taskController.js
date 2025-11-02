@@ -1,5 +1,7 @@
 import Task from "../models/Task.js";
 import User from "../models/User.js";
+import Activity from "../models/Activity.js";
+import Group from "../models/Group.js";
 
 // Helper function to get or create user - using atomic operation to prevent duplicates
 const getOrCreateUserFromAuth = async (auth0Id, email, name, picture) => {
@@ -128,13 +130,63 @@ export const getTasks = async (req, res) => {
       req.userPicture
     );
 
-    // Get user's own tasks and shared tasks where user is a collaborator
-    const tasks = await Task.find({
+    // Get all groups user has access to (owner or accepted collaborator)
+    const accessibleGroups = await Group.find({
       $or: [
-        { userId: req.auth0Id }, // User's own tasks (using auth0Id)
-        { "collaborators.user": req.auth0Id }, // Tasks where user is a collaborator
+        { owner: req.auth0Id },
+        { "collaborators.userId": req.auth0Id, "collaborators.status": "accepted" },
       ],
-    })
+    });
+
+    const accessibleGroupTags = accessibleGroups.map(g => g.tag);
+
+    // Optional: Filter by groupTag if provided
+    const { groupTag } = req.query;
+    
+    let query;
+    
+    if (groupTag) {
+      // Normalize groupTag
+      let normalizedGroupTag = groupTag.toLowerCase();
+      if (!normalizedGroupTag.startsWith('@')) {
+        normalizedGroupTag = `@${normalizedGroupTag}`;
+      }
+
+      if (normalizedGroupTag === "@personal") {
+        // Personal tasks: userId matches and groupTag is @personal or null
+        query = {
+          userId: req.auth0Id,
+          $or: [
+            { groupTag: "@personal" },
+            { groupTag: { $exists: false } },
+            { groupTag: null },
+          ],
+        };
+      } else {
+        // Group tasks: must be in accessible groups
+        if (!accessibleGroupTags.includes(normalizedGroupTag)) {
+          return res.status(403).json({
+            success: false,
+            message: "You don't have access to this group",
+          });
+        }
+        // Show all tasks in this group (if user has access)
+        query = {
+          groupTag: normalizedGroupTag,
+        };
+      }
+    } else {
+      // Show all accessible tasks: user's personal tasks + tasks from accessible groups
+      query = {
+        $or: [
+          { userId: req.auth0Id, $or: [{ groupTag: "@personal" }, { groupTag: { $exists: false } }, { groupTag: null }] }, // User's personal tasks
+          { groupTag: { $in: accessibleGroupTags } }, // Tasks from groups user belongs to
+          { "collaborators.user": req.auth0Id }, // Tasks where user is a collaborator (legacy)
+        ],
+      };
+    }
+
+    const tasks = await Task.find(query)
       .sort({ createdAt: -1 });
 
     res.status(200).json({
@@ -202,13 +254,51 @@ export const createTask = async (req, res) => {
 
     // Create task with userId (using auth0Id)
     // Always override userId from request body to use auth0Id
-    const { userId, ...restBody } = req.body;
+    const { userId, groupTag, ...restBody } = req.body;
+    
+    // Normalize groupTag
+    let normalizedGroupTag = groupTag || "@personal";
+    if (normalizedGroupTag && !normalizedGroupTag.startsWith('@')) {
+      normalizedGroupTag = `@${normalizedGroupTag}`;
+    }
+    normalizedGroupTag = normalizedGroupTag.toLowerCase();
+
+    // If groupTag is provided and not @personal, verify user has access
+    if (normalizedGroupTag !== "@personal") {
+      const group = await Group.findOne({
+        tag: normalizedGroupTag,
+        $or: [
+          { owner: req.auth0Id },
+          { "collaborators.userId": req.auth0Id, "collaborators.status": "accepted" },
+        ],
+      });
+
+      if (!group) {
+        return res.status(403).json({
+          success: false,
+          message: "You don't have access to this group",
+        });
+      }
+    }
+
     const taskData = {
       ...restBody,
       userId: req.auth0Id, // Always use auth0Id, never trust userId from client
+      groupTag: normalizedGroupTag,
     };
 
     const task = await Task.create(taskData);
+
+    // Create activity for task creation
+    await Activity.create({
+      type: "task_created",
+      taskId: task._id,
+      taskTitle: task.title,
+      userId: req.auth0Id,
+      userName: req.userName || user.name || "Unknown",
+      groupTag: normalizedGroupTag,
+      timestamp: new Date(),
+    });
 
     res.status(201).json({
       success: true,
@@ -255,6 +345,35 @@ export const updateTask = async (req, res) => {
     const updateData = { ...req.body };
     delete updateData.userId;
 
+    // Handle groupTag update if provided
+    if (updateData.groupTag) {
+      let normalizedGroupTag = updateData.groupTag;
+      if (!normalizedGroupTag.startsWith('@')) {
+        normalizedGroupTag = `@${normalizedGroupTag}`;
+      }
+      normalizedGroupTag = normalizedGroupTag.toLowerCase();
+
+      // If groupTag is being changed and not @personal, verify user has access
+      if (normalizedGroupTag !== "@personal" && normalizedGroupTag !== task.groupTag) {
+        const group = await Group.findOne({
+          tag: normalizedGroupTag,
+          $or: [
+            { owner: req.auth0Id },
+            { "collaborators.userId": req.auth0Id, "collaborators.status": "accepted" },
+          ],
+        });
+
+        if (!group) {
+          return res.status(403).json({
+            success: false,
+            message: "You don't have access to this group",
+          });
+        }
+      }
+
+      updateData.groupTag = normalizedGroupTag;
+    }
+
     // Add status change timestamps if status is being updated
     if (updateData.status) {
       addStatusChangeTimestamps(task, updateData);
@@ -268,6 +387,19 @@ export const updateTask = async (req, res) => {
         runValidators: true,
       }
     );
+
+    // Create activity for task update (if significant changes)
+    if (updateData.title || updateData.description || updateData.status) {
+      await Activity.create({
+        type: "task_updated",
+        taskId: updatedTask._id,
+        taskTitle: updatedTask.title,
+        userId: req.auth0Id,
+        userName: req.userName || user.name || "Unknown",
+        groupTag: updatedTask.groupTag,
+        timestamp: new Date(),
+      });
+    }
 
     res.status(200).json({
       success: true,
@@ -295,7 +427,7 @@ export const deleteTask = async (req, res) => {
     );
 
     // Only owner can delete tasks
-    const task = await Task.findOneAndDelete({
+    const task = await Task.findOne({
       _id: req.params.id,
       userId: req.auth0Id, // Only owner can delete (using auth0Id)
     });
@@ -306,6 +438,24 @@ export const deleteTask = async (req, res) => {
         message: "Task not found or you don't have permission to delete",
       });
     }
+
+    // Store task info for activity before deletion
+    const taskTitle = task.title;
+    const groupTag = task.groupTag;
+
+    // Delete the task
+    await Task.findByIdAndDelete(req.params.id);
+
+    // Create activity for task deletion
+    await Activity.create({
+      type: "task_deleted",
+      taskId: task._id,
+      taskTitle: taskTitle,
+      userId: req.auth0Id,
+      userName: req.userName || user.name || "Unknown",
+      groupTag: groupTag,
+      timestamp: new Date(),
+    });
 
     res.status(200).json({
       success: true,
@@ -361,6 +511,21 @@ export const updateTaskStatus = async (req, res) => {
         runValidators: true,
       }
     );
+
+    // Create activity for task moved (if status changed)
+    if (task.status !== status) {
+      await Activity.create({
+        type: "task_moved",
+        taskId: updatedTask._id,
+        taskTitle: updatedTask.title,
+        userId: req.auth0Id,
+        userName: req.userName || user.name || "Unknown",
+        groupTag: updatedTask.groupTag,
+        fromStatus: task.status,
+        toStatus: status,
+        timestamp: new Date(),
+      });
+    }
 
     res.status(200).json({
       success: true,

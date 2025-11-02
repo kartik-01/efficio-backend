@@ -7,6 +7,8 @@ import {
   uploadProfilePicture,
   deactivateAccount,
   deleteAccount,
+  searchUsers,
+  getPendingInvitations,
 } from "../controllers/userController.js";
 import { authenticate } from "../middleware/auth.js";
 
@@ -35,5 +37,11 @@ router.post("/deactivate", deactivateAccount);
 
 // Delete account (permanently delete user and their tasks)
 router.delete("/account", deleteAccount);
+
+// Search users by name or email
+router.get("/search", searchUsers);
+
+// Get pending group invitations
+router.get("/invitations", getPendingInvitations);
 
 export default router;

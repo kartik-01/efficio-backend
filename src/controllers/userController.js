@@ -1,5 +1,6 @@
 import User from "../models/User.js";
 import Task from "../models/Task.js";
+import Group from "../models/Group.js";
 
 // Get or create user from Auth0 token
 export const getOrCreateUser = async (req, res) => {
@@ -328,6 +329,105 @@ export const deleteAccount = async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Error deleting account",
+      error: error.message,
+    });
+  }
+};
+
+// Search users by name or email
+export const searchUsers = async (req, res) => {
+  try {
+    const { q } = req.query;
+
+    if (!q || q.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Search query is required",
+      });
+    }
+
+    const searchQuery = q.trim();
+
+    // Search by name or email (case-insensitive, partial match)
+    const users = await User.find({
+      auth0Id: { $ne: req.auth0Id }, // Exclude current user
+      isActive: true, // Only active users
+      $or: [
+        { name: { $regex: searchQuery, $options: "i" } },
+        { email: { $regex: searchQuery, $options: "i" } },
+      ],
+    })
+      .select("auth0Id name email picture customPicture")
+      .limit(20); // Limit results
+
+    // Format response to match frontend expectations
+    const formattedUsers = users.map(user => ({
+      userId: user.auth0Id,
+      name: user.name || "Unknown",
+      email: user.email || "",
+      picture: user.customPicture || user.picture || "",
+    }));
+
+    res.status(200).json({
+      success: true,
+      data: formattedUsers,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Error searching users",
+      error: error.message,
+    });
+  }
+};
+
+// Get pending group invitations
+export const getPendingInvitations = async (req, res) => {
+  try {
+    // Find groups where user is a collaborator with pending status
+    const groups = await Group.find({
+      "collaborators.userId": req.auth0Id,
+      "collaborators.status": "pending",
+    })
+      .sort({ createdAt: -1 });
+
+    // Get owner details for each group
+    const ownerIds = [...new Set(groups.map(g => g.owner))];
+    const owners = await User.find({ auth0Id: { $in: ownerIds } });
+    const ownerMap = new Map(owners.map(o => [o.auth0Id, o]));
+
+    // Format response
+    const invitations = groups.map(group => {
+      const collaborator = group.collaborators.find(
+        c => c.userId === req.auth0Id && c.status === "pending"
+      );
+
+      const owner = ownerMap.get(group.owner);
+
+      return {
+        groupId: group._id.toString(),
+        groupName: group.name,
+        groupTag: group.tag,
+        role: collaborator.role,
+        invitedAt: collaborator.invitedAt,
+        owner: owner ? {
+          userId: owner.auth0Id,
+          name: owner.name,
+          email: owner.email,
+        } : {
+          userId: group.owner,
+        },
+      };
+    });
+
+    res.status(200).json({
+      success: true,
+      data: invitations,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Error fetching invitations",
       error: error.message,
     });
   }
