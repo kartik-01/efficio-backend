@@ -135,9 +135,26 @@ export const getActivities = async (req, res) => {
       .sort({ timestamp: -1 })
       .limit(parseInt(limit));
 
+    // Get all unique user IDs from activities
+    const userIds = [...new Set(activities.map(a => a.userId))];
+
+    // Fetch user pictures
+    const users = await User.find({ auth0Id: { $in: userIds } }).select('auth0Id picture customPicture');
+    const userPictureMap = new Map();
+    users.forEach(u => {
+      userPictureMap.set(u.auth0Id, u.customPicture || u.picture || null);
+    });
+
+    // Populate pictures in activities
+    const activitiesWithPictures = activities.map(activity => {
+      const activityObj = activity.toObject();
+      activityObj.userPicture = userPictureMap.get(activity.userId) || null;
+      return activityObj;
+    });
+
     res.status(200).json({
       success: true,
-      data: activities,
+      data: activitiesWithPictures,
     });
   } catch (error) {
     res.status(500).json({

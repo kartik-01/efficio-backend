@@ -3,7 +3,7 @@ import User from "../models/User.js";
 import Task from "../models/Task.js";
 import Activity from "../models/Activity.js";
 
-// Helper function to get or create user
+// Helper function to get or create user (preserves custom name and picture)
 const getOrCreateUserFromAuth = async (auth0Id, email, name, picture) => {
   let user;
   try {
@@ -34,11 +34,14 @@ const getOrCreateUserFromAuth = async (auth0Id, email, name, picture) => {
       user.isActive = true;
     }
 
+    // Only update missing fields - NEVER overwrite custom name or customPicture
+    // Preserve user customizations (name and customPicture should never be overwritten)
     let updated = false;
     if (!user.email && email) {
       user.email = email;
       updated = true;
     }
+    // Only set picture if user doesn't have customPicture and doesn't have picture
     if (!user.picture && !user.customPicture && picture) {
       user.picture = picture;
       updated = true;
@@ -188,14 +191,74 @@ export const getUserGroups = async (req, res) => {
       "collaborators.status": "pending",
     }).sort({ createdAt: -1 });
 
+    // Get all unique user IDs from groups (owner + all collaborators)
+    const allUserIds = new Set();
+    acceptedGroups.forEach(group => {
+      allUserIds.add(group.owner);
+      group.collaborators.forEach(c => allUserIds.add(c.userId));
+    });
+    pendingInvitations.forEach(group => {
+      allUserIds.add(group.owner);
+      group.collaborators.forEach(c => allUserIds.add(c.userId));
+    });
+
+    // Fetch user pictures for all users
+    const users = await User.find({ auth0Id: { $in: Array.from(allUserIds) } }).select('auth0Id picture customPicture');
+    const userPictureMap = new Map();
+    users.forEach(u => {
+      userPictureMap.set(u.auth0Id, u.customPicture || u.picture || null);
+    });
+
+    // Populate pictures in groups
+    const groupsWithPictures = acceptedGroups.map(group => {
+      const groupObj = group.toObject();
+      // Add owner picture
+      if (!groupObj.ownerPicture) {
+        groupObj.ownerPicture = userPictureMap.get(group.owner) || null;
+      }
+      // Add collaborator pictures
+      groupObj.collaborators = groupObj.collaborators.map(collab => {
+        const picture = userPictureMap.get(collab.userId) || null;
+        return {
+          ...collab,
+          picture: picture,
+        };
+      });
+      return groupObj;
+    });
+
+    // Populate pictures in pending invitations
+    const pendingInvitationsWithPictures = pendingInvitations.map(group => {
+      const groupObj = group.toObject();
+      // Add owner picture
+      if (!groupObj.ownerPicture) {
+        groupObj.ownerPicture = userPictureMap.get(group.owner) || null;
+      }
+      // Add collaborator pictures
+      groupObj.collaborators = groupObj.collaborators.map(collab => {
+        const picture = userPictureMap.get(collab.userId) || null;
+        return {
+          ...collab,
+          picture: picture,
+        };
+      });
+      return groupObj;
+    });
+
     res.status(200).json({
       success: true,
       data: {
-        groups: acceptedGroups,
-        pendingInvitations: pendingInvitations.map(group => ({
+        groups: groupsWithPictures,
+        pendingInvitations: pendingInvitationsWithPictures.map(group => ({
           id: group._id,
           name: group.name,
           tag: group.tag,
+          owner: {
+            userId: group.owner,
+            name: group.collaborators.find(c => c.userId === group.owner && c.status === "accepted")?.name || "Owner",
+            email: group.collaborators.find(c => c.userId === group.owner && c.status === "accepted")?.email || "",
+            picture: group.ownerPicture,
+          },
           invitedBy: group.collaborators.find(c => 
             c.userId === req.auth0Id && c.status === "pending"
           ),
@@ -413,15 +476,25 @@ export const inviteUser = async (req, res) => {
         existingCollaborator.status = "pending";
         existingCollaborator.invitedAt = new Date();
         existingCollaborator.role = role;
+        // Update name/email in case they changed
+        existingCollaborator.name = name;
+        existingCollaborator.email = email;
         await group.save();
-      } else {
+      } else if (existingCollaborator.status === "pending") {
+        // Already has pending invitation, just update role/name/email
+        existingCollaborator.role = role;
+        existingCollaborator.name = name;
+        existingCollaborator.email = email;
+        await group.save();
+      } else if (existingCollaborator.status === "accepted") {
+        // User is already an accepted member
         return res.status(400).json({
           success: false,
-          message: "User is already a member or has a pending invitation",
+          message: "User is already a member of this group",
         });
       }
     } else {
-      // Add new collaborator
+      // Add new collaborator (user was previously removed or never invited)
       group.collaborators.push({
         userId,
         name,
@@ -490,9 +563,19 @@ export const acceptInvitation = async (req, res) => {
         { new: true }
       );
 
+      // Check if user previously left this group (rejoin scenario)
+      const previousLeaveActivity = await Activity.findOne({
+        groupTag: group.tag,
+        userId: req.auth0Id,
+        type: "member_removed",
+      }).sort({ timestamp: -1 });
+
+      // Determine activity type: rejoin if they previously left, otherwise new join
+      const activityType = previousLeaveActivity ? "member_rejoined" : "member_added";
+
       // Create activity
       await Activity.create({
-        type: "member_added",
+        type: activityType,
         userId: req.auth0Id,
         userName: req.userName || user.name || "Unknown",
         groupTag: group.tag,
@@ -818,9 +901,37 @@ export const getGroupMembers = async (req, res) => {
       c => c.status === "accepted"
     );
 
+    // Get all user IDs (including owner)
+    const userIds = [group.owner, ...acceptedMembers.map(m => m.userId)];
+
+    // Fetch user pictures
+    const users = await User.find({ auth0Id: { $in: userIds } }).select('auth0Id picture customPicture');
+    const userPictureMap = new Map();
+    users.forEach(u => {
+      userPictureMap.set(u.auth0Id, u.customPicture || u.picture || null);
+    });
+
+    // Add pictures to members
+    const membersWithPictures = acceptedMembers.map(member => ({
+      ...member.toObject(),
+      picture: userPictureMap.get(member.userId) || null,
+    }));
+
+    // Also add owner if not in accepted members
+    const ownerInfo = {
+      userId: group.owner,
+      name: req.userName || user.name || "Owner",
+      email: req.userEmail || user.email || "",
+      role: "owner",
+      status: "accepted",
+      picture: userPictureMap.get(group.owner) || null,
+    };
+
+    const allMembers = [ownerInfo, ...membersWithPictures.filter(m => m.userId !== group.owner)];
+
     res.status(200).json({
       success: true,
-      data: acceptedMembers,
+      data: allMembers,
     });
   } catch (error) {
     res.status(500).json({

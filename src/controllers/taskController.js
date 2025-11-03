@@ -268,6 +268,7 @@ export const createTask = async (req, res) => {
     normalizedGroupTag = normalizedGroupTag.toLowerCase();
 
     let assignedUsersData = [];
+    let normalizedAssignedTo = restBody.assignedTo || [];
     
     // If groupTag is provided and not @personal, verify user has access and get assigned user info
     if (normalizedGroupTag !== "@personal") {
@@ -289,7 +290,7 @@ export const createTask = async (req, res) => {
       // If assignedTo is provided, get user info from group collaborators
       if (restBody.assignedTo && Array.isArray(restBody.assignedTo) && restBody.assignedTo.length > 0) {
         // Normalize assignedTo to ensure all values are strings (auth0Id)
-        const normalizedAssignedTo = restBody.assignedTo.map(id => id?.toString().trim()).filter(Boolean);
+        normalizedAssignedTo = restBody.assignedTo.map(id => id?.toString().trim()).filter(Boolean);
         
         for (const userId of normalizedAssignedTo) {
           // Check if it's the owner
@@ -300,6 +301,7 @@ export const createTask = async (req, res) => {
                 userId: userId.toString().trim(), // Ensure it's stored as string
                 name: ownerUser.name || "Owner",
                 email: ownerUser.email || "",
+                picture: ownerUser.customPicture || ownerUser.picture || null,
               });
             }
           } else {
@@ -309,21 +311,21 @@ export const createTask = async (req, res) => {
               c.status === "accepted"
             );
             if (collaborator) {
+              // Get user picture from User model
+              const collaboratorUser = await User.findOne({ auth0Id: userId });
               assignedUsersData.push({
                 userId: userId.toString().trim(), // Ensure it's stored as string
                 name: collaborator.name,
                 email: collaborator.email,
+                picture: collaboratorUser ? (collaboratorUser.customPicture || collaboratorUser.picture || null) : null,
               });
             }
           }
         }
-        
-        // Update assignedTo to normalized values
-        taskData.assignedTo = normalizedAssignedTo;
       }
     } else if (restBody.assignedTo && Array.isArray(restBody.assignedTo) && restBody.assignedTo.length > 0) {
       // For personal tasks, normalize and get user info from User model
-      const normalizedAssignedTo = restBody.assignedTo.map(id => id?.toString().trim()).filter(Boolean);
+      normalizedAssignedTo = restBody.assignedTo.map(id => id?.toString().trim()).filter(Boolean);
       
       for (const userId of normalizedAssignedTo) {
         const userIdNormalized = userId.toString().trim();
@@ -333,18 +335,18 @@ export const createTask = async (req, res) => {
             userId: userIdNormalized, // Store as normalized string
             name: assignedUser.name || "User",
             email: assignedUser.email || "",
+            picture: assignedUser.customPicture || assignedUser.picture || null,
           });
         }
       }
-      
-      // Update assignedTo to normalized values
-      taskData.assignedTo = normalizedAssignedTo;
     }
 
+    // Build taskData object with normalized values
     const taskData = {
       ...restBody,
       userId: req.auth0Id, // Always use auth0Id, never trust userId from client
       groupTag: normalizedGroupTag,
+      assignedTo: normalizedAssignedTo, // Use normalized assignedTo
       assignedUsers: assignedUsersData, // Store assigned user info
     };
 
@@ -424,11 +426,12 @@ export const updateTask = async (req, res) => {
             if (userIdNormalized === group.owner || userIdNormalized === group.owner.toString().trim()) {
               const ownerUser = await User.findOne({ auth0Id: userIdNormalized });
               if (ownerUser) {
-                assignedUsersData.push({
-                  userId: userIdNormalized, // Store as normalized string
-                  name: ownerUser.name || "Owner",
-                  email: ownerUser.email || "",
-                });
+              assignedUsersData.push({
+                userId: userIdNormalized, // Store as normalized string
+                name: ownerUser.name || "Owner",
+                email: ownerUser.email || "",
+                picture: ownerUser.customPicture || ownerUser.picture || null,
+              });
               }
             } else {
               const collaborator = group.collaborators.find(c => 
@@ -436,10 +439,13 @@ export const updateTask = async (req, res) => {
                 c.status === "accepted"
               );
               if (collaborator) {
+                // Get user picture from User model
+                const collaboratorUser = await User.findOne({ auth0Id: userIdNormalized });
                 assignedUsersData.push({
                   userId: userIdNormalized, // Store as normalized string
                   name: collaborator.name,
                   email: collaborator.email,
+                  picture: collaboratorUser ? (collaboratorUser.customPicture || collaboratorUser.picture || null) : null,
                 });
               }
             }
@@ -455,6 +461,7 @@ export const updateTask = async (req, res) => {
               userId: userIdNormalized, // Store as normalized string
               name: assignedUser.name || "User",
               email: assignedUser.email || "",
+              picture: assignedUser.customPicture || assignedUser.picture || null,
             });
           }
         }

@@ -5,7 +5,7 @@ const activitySchema = new mongoose.Schema(
     // Type of activity
     type: {
       type: String,
-      enum: ["task_created", "task_moved", "task_deleted", "task_updated", "member_added", "member_removed", "member_role_changed"],
+      enum: ["task_created", "task_moved", "task_deleted", "task_updated", "member_added", "member_removed", "member_role_changed", "member_rejoined"],
       required: true,
     },
     // Task reference (if applicable)

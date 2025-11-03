@@ -1,6 +1,7 @@
 import User from "../models/User.js";
 import Group from "../models/Group.js";
 import Task from "../models/Task.js";
+import Notification from "../models/Notification.js";
 
 // Helper function to get or create user
 const getOrCreateUserFromAuth = async (auth0Id, email, name, picture) => {
@@ -75,13 +76,11 @@ export const getNotifications = async (req, res) => {
       req.userPicture
     );
 
-    // Get pending invitations count
+    // Get pending invitations (only those that are actually pending, not accepted/declined)
     const pendingInvitations = await Group.find({
       "collaborators.userId": req.auth0Id,
       "collaborators.status": "pending",
     });
-
-    const pendingInvitationsCount = pendingInvitations.length;
 
     // Get all groups user has accepted access to
     const accessibleGroups = await Group.find({
@@ -117,33 +116,115 @@ export const getNotifications = async (req, res) => {
       return hasAcceptedAccess;
     });
 
-    // Format assigned tasks as notifications
-    const taskNotifications = filteredAssignedTasks.map(task => ({
-      id: task._id.toString(),
-      type: "task_assigned",
-      taskId: task._id.toString(),
-      taskTitle: task.title,
-      groupTag: task.groupTag,
-      createdAt: task.createdAt || task._id.getTimestamp(),
-      read: false, // Could add read status tracking later
-    }));
+    // Get or create notification records for invitations and tasks
+    const now = new Date();
+    
+    // Create/update invitation notifications
+    for (const group of pendingInvitations) {
+      await Notification.findOneAndUpdate(
+        {
+          userId: req.auth0Id,
+          type: "invitation",
+          groupId: group._id,
+        },
+        {
+          userId: req.auth0Id,
+          type: "invitation",
+          groupId: group._id,
+          groupTag: group.tag,
+          read: false,
+          createdAt: group.collaborators.find(c => c.userId === req.auth0Id)?.invitedAt || group.createdAt,
+        },
+        { upsert: true, new: true }
+      );
+    }
 
-    // Format pending invitations as notifications
-    const invitationNotifications = pendingInvitations.map(group => ({
-      id: `invitation_${group._id}`,
+    // Create/update task notifications
+    for (const task of filteredAssignedTasks) {
+      await Notification.findOneAndUpdate(
+        {
+          userId: req.auth0Id,
+          type: "task_assigned",
+          taskId: task._id,
+        },
+        {
+          userId: req.auth0Id,
+          type: "task_assigned",
+          taskId: task._id,
+          groupId: accessibleGroups.find(g => g.tag === task.groupTag)?._id,
+          groupTag: task.groupTag,
+          read: false,
+          createdAt: task.createdAt || task._id.getTimestamp(),
+        },
+        { upsert: true, new: true }
+      );
+    }
+
+    // Remove notifications for invitations that are no longer pending (accepted/declined)
+    const pendingInvitationIds = pendingInvitations.map(g => g._id.toString());
+    await Notification.deleteMany({
+      userId: req.auth0Id,
       type: "invitation",
-      groupId: group._id.toString(),
-      groupName: group.name,
-      groupTag: group.tag,
-      invitedAt: group.collaborators.find(c => c.userId === req.auth0Id)?.invitedAt || group.createdAt,
-      read: false,
-    }));
+      groupId: { $nin: pendingInvitations.map(g => g._id) },
+    });
 
-    // Combine and sort by date (newest first)
-    const allNotifications = [...invitationNotifications, ...taskNotifications].sort(
-      (a, b) => new Date(b.createdAt || b.invitedAt) - new Date(a.createdAt || a.invitedAt)
+    // Remove notifications for tasks that are completed or no longer assigned
+    const activeTaskIds = filteredAssignedTasks.map(t => t._id.toString());
+    await Notification.deleteMany({
+      userId: req.auth0Id,
+      type: "task_assigned",
+      taskId: { $nin: filteredAssignedTasks.map(t => t._id) },
+    });
+
+    // Get all unread notifications for user
+    const notificationRecords = await Notification.find({
+      userId: req.auth0Id,
+      read: false,
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Format notifications with details
+    const formattedNotifications = await Promise.all(
+      notificationRecords.map(async (notif) => {
+        if (notif.type === "invitation") {
+          const group = pendingInvitations.find(g => g._id.toString() === notif.groupId?.toString());
+          if (!group) return null; // Skip if group no longer exists or no longer pending
+          
+          return {
+            id: notif._id.toString(),
+            type: "invitation",
+            groupId: group._id.toString(),
+            groupName: group.name,
+            groupTag: group.tag,
+            invitedAt: group.collaborators.find(c => c.userId === req.auth0Id)?.invitedAt || group.createdAt,
+            createdAt: notif.createdAt,
+            read: notif.read,
+          };
+        } else if (notif.type === "task_assigned") {
+          const task = filteredAssignedTasks.find(t => t._id.toString() === notif.taskId?.toString());
+          if (!task) return null; // Skip if task no longer exists
+          
+          return {
+            id: notif._id.toString(),
+            type: "task_assigned",
+            taskId: task._id.toString(),
+            taskTitle: task.title,
+            groupTag: task.groupTag,
+            createdAt: task.createdAt || task._id.getTimestamp(),
+            read: notif.read,
+          };
+        }
+        return null;
+      })
     );
 
+    // Filter out null values
+    const allNotifications = formattedNotifications.filter(n => n !== null);
+
+    const pendingInvitationsCount = pendingInvitations.length;
+    const taskNotifications = allNotifications.filter(n => n.type === "task_assigned");
+    const invitationNotifications = allNotifications.filter(n => n.type === "invitation");
     const totalUnreadCount = allNotifications.length;
 
     res.status(200).json({
@@ -159,6 +240,68 @@ export const getNotifications = async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Error fetching notifications",
+      error: error.message,
+    });
+  }
+};
+
+// Mark notification as read
+export const markNotificationAsRead = async (req, res) => {
+  try {
+    const { notificationId } = req.params;
+
+    const notification = await Notification.findOneAndUpdate(
+      {
+        _id: notificationId,
+        userId: req.auth0Id, // Ensure user can only mark their own notifications as read
+      },
+      {
+        read: true,
+      },
+      { new: true }
+    );
+
+    if (!notification) {
+      return res.status(404).json({
+        success: false,
+        message: "Notification not found",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Notification marked as read",
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Error marking notification as read",
+      error: error.message,
+    });
+  }
+};
+
+// Mark all notifications as read
+export const markAllNotificationsAsRead = async (req, res) => {
+  try {
+    await Notification.updateMany(
+      {
+        userId: req.auth0Id,
+        read: false,
+      },
+      {
+        read: true,
+      }
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "All notifications marked as read",
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Error marking all notifications as read",
       error: error.message,
     });
   }

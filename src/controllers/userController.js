@@ -365,7 +365,7 @@ export const searchUsers = async (req, res) => {
       userId: user.auth0Id,
       name: user.name || "Unknown",
       email: user.email || "",
-      picture: user.customPicture || user.picture || "",
+      picture: user.customPicture || user.picture || null, // Return null instead of empty string
     }));
 
     res.status(200).json({
