@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: efficio-backend
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 4000
+      - key: MONGO_URI
+        sync: false  # Set this manually in Render dashboard
+      - key: FRONTEND_URL
+        sync: false  # Set this manually in Render dashboard (e.g., https://your-app.netlify.app)
+

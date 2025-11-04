@@ -25,9 +25,18 @@ connectDB()
 const app = express();
 
 // CORS configuration - allow requests from frontend
-// For development, allow all origins
+const getAllowedOrigins = () => {
+  // If FRONTEND_URL is set, use it (supports comma-separated URLs)
+  if (process.env.FRONTEND_URL) {
+    return process.env.FRONTEND_URL.split(',').map(url => url.trim());
+  }
+  // In development, allow all origins for convenience
+  // In production, you should set FRONTEND_URL
+  return process.env.NODE_ENV === 'production' ? [] : true;
+};
+
 const corsOptions = {
-  origin: true, // Allow all origins in development
+  origin: getAllowedOrigins(),
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
