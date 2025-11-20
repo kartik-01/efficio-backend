@@ -10,6 +10,7 @@ import activityRoutes from "./routes/activityRoutes.js";
 import notificationRoutes from "./routes/notificationRoutes.js";
 import { authenticate } from "./middleware/auth.js";
 import timeRoutes from "./time-tracker/routes/timeRoutes.js";
+import { startDailySummaryJob } from "./time-tracker/jobs/dailySummaryJob.js";
 
 dotenv.config();
 
@@ -18,6 +19,8 @@ connectDB()
   .then(async () => {
     // Ensure unique indexes exist after connection
     await ensureUserIndexes();
+    // Start scheduled jobs
+    startDailySummaryJob();
   })
   .catch(err => {
     console.error('MongoDB connection error:', err.message);

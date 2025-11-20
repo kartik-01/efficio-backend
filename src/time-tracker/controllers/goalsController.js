@@ -1,7 +1,7 @@
 import TimeGoal from "../models/timeGoal.js";
 import TimeSession from "../models/timeSession.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
-import { dayWindow, rangeWindow } from "../utils/timeRange.js";
+import { dayWindow, rangeWindow, weekWindow } from "../utils/timeRange.js";
 
 function minutesBetween(a, b) { return Math.max(0, Math.round((b - a) / 60000)); }
 
@@ -9,38 +9,57 @@ export const listGoals = asyncHandler(async (req, res) => {
   const userId = req.auth0Id;
   const { withProgress = "false", range = "today", tz } = req.query;
 
+  // Get all active goals
   const goals = await TimeGoal.find({ userId, active: true }).lean();
 
   if (withProgress !== "true") {
     return res.json({ success: true, data: goals });
   }
 
-  let start, end;
-  if (range === "today") ({ start, end } = dayWindow(new Date().toISOString().slice(0,10), tz));
-  else if (req.query.start && req.query.end) ({ start, end } = rangeWindow(req.query.start, req.query.end, tz));
-  else return res.status(422).json({ success: false, message: "Provide range=today or start&end" });
+  // Calculate progress for each goal based on its period
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const timezone = tz || "UTC";
 
-  const sessions = await TimeSession.find({
-    userId,
-    $or: [
-      { startTime: { $lt: end }, endTime: { $gt: start } },
-      { startTime: { $gte: start, $lt: end } },
-    ],
-  }).lean();
+  const withProg = await Promise.all(goals.map(async (g) => {
+    let start, end;
+    
+    if (g.period === "daily") {
+      // For daily goals, use today's window
+      ({ start, end } = dayWindow(today, timezone));
+    } else {
+      // For weekly goals, use the week window (Monday to Sunday)
+      ({ start, end } = weekWindow(today, timezone));
+    }
 
-  const byCategory = new Map();
-  for (const s of sessions) {
-    const sStart = new Date(Math.max(s.startTime, start));
-    const sEnd   = new Date(Math.min(s.endTime || new Date(), end));
-    const mins = minutesBetween(sStart, sEnd);
-    if (!mins) continue;
-    byCategory.set(s.categoryId, (byCategory.get(s.categoryId) || 0) + mins);
-  }
+    // Get sessions for this goal's category within the time window
+    const sessions = await TimeSession.find({
+      userId,
+      categoryId: g.categoryId,
+      $or: [
+        { startTime: { $lt: end }, endTime: { $gt: start } },
+        { startTime: { $gte: start, $lt: end } },
+      ],
+    }).lean();
 
-  const withProg = goals.map(g => {
-    const m = (g.period === "daily") ? (byCategory.get(g.categoryId) || 0) : (byCategory.get(g.categoryId) || 0); // simple v1
-    return { ...g, progress: { minutes: m, met: m >= g.targetMinutes } };
-  });
+    // Calculate total minutes for this category in the time window
+    let totalMinutes = 0;
+    for (const s of sessions) {
+      const sStart = new Date(Math.max(s.startTime, start));
+      const sEnd = new Date(Math.min(s.endTime || new Date(), end));
+      const mins = minutesBetween(sStart, sEnd);
+      if (mins > 0) {
+        totalMinutes += mins;
+      }
+    }
+
+    return {
+      ...g,
+      progress: {
+        minutes: totalMinutes,
+        met: totalMinutes >= g.targetMinutes,
+      },
+    };
+  }));
 
   res.json({ success: true, data: withProg });
 });

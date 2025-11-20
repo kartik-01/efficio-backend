@@ -2,6 +2,7 @@ import TimeSession from "../models/timeSession.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { dayWindow, rangeWindow } from "../utils/timeRange.js";
 import { FOCUS_CATEGORIES } from "../utils/constants.js";
+import { DateTime } from "luxon";
 
 function minutesBetween(a, b) { return Math.max(0, Math.round((b - a) / 60000)); }
 
@@ -11,20 +12,37 @@ export const getSummary = asyncHandler(async (req, res) => {
 
   let start, end;
   if (range === "today") {
-    ({ start, end } = dayWindow(new Date().toISOString().slice(0,10), tz));
+    // Get today's date in the user's timezone, not UTC
+    const timezone = tz || "UTC";
+    const todayInTz = DateTime.now().setZone(timezone);
+    const todayStr = todayInTz.toISODate(); // Returns YYYY-MM-DD format
+    ({ start, end } = dayWindow(todayStr, timezone));
   } else if (req.query.start && req.query.end) {
     ({ start, end } = rangeWindow(req.query.start, req.query.end, tz));
   } else {
     return res.status(422).json({ success: false, message: "Provide range=today or start&end" });
   }
 
+  // Query sessions that overlap with the day window
+  // This includes:
+  // 1. Sessions that start before the day ends and end after the day starts (overlapping)
+  // 2. Sessions that start within the day (regardless of end time)
+  // 3. Running sessions (no endTime) that started before the day ends
   const sessions = await TimeSession.find({
     userId,
     $or: [
+      // Sessions that overlap with the day window
       { startTime: { $lt: end }, endTime: { $gt: start } },
+      // Sessions that start within the day
       { startTime: { $gte: start, $lt: end } },
+      // Running sessions (no endTime) that started before the day ends
+      { startTime: { $lt: end }, endTime: null },
+      { startTime: { $lt: end }, endTime: { $exists: false } },
     ],
   }).lean();
+
+  console.log(`[getSummary] User: ${userId}, Timezone: ${tz || 'UTC'}, Day window: ${start.toISOString()} to ${end.toISOString()}`);
+  console.log(`[getSummary] Found ${sessions.length} sessions`);
 
   // clamp to window and aggregate
   const byCategory = new Map();
@@ -41,7 +59,7 @@ export const getSummary = asyncHandler(async (req, res) => {
     if (FOCUS_CATEGORIES.has(s.categoryId)) focus += mins;
   }
 
-  res.json({
+  const result = {
     success: true,
     data: {
       totalMinutes: total,
@@ -49,5 +67,9 @@ export const getSummary = asyncHandler(async (req, res) => {
       focus: { deepMinutes: focus, otherMinutes: Math.max(0, total - focus) },
       // streaks optional (compute later if you want)
     },
-  });
+  };
+  
+  console.log(`[getSummary] Result:`, JSON.stringify(result, null, 2));
+  
+  res.json(result);
 });

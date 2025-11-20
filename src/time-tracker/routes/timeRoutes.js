@@ -7,6 +7,7 @@ import {
 } from "../controllers/sessionsController.js";
 
 import { getSummary } from "../controllers/summaryController.js";
+import { getDailySummary } from "../controllers/dailySummaryController.js";
 import { classify } from "../controllers/classifyController.js";
 import { listCategories } from "../controllers/categoriesController.js";
 import { listGoals, createGoal, patchGoal } from "../controllers/goalsController.js";
@@ -26,6 +27,7 @@ router.get("/sessions", listSessions);
 
 // Summary (quick insights)
 router.get("/summary", getSummary);
+router.get("/summary/daily", getDailySummary);
 
 // Classify (category suggestion)
 router.post("/classify", classify);
