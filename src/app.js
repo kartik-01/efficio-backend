@@ -8,6 +8,9 @@ import taskRoutes from "./routes/taskRoutes.js";
 import groupRoutes from "./routes/groupRoutes.js";
 import activityRoutes from "./routes/activityRoutes.js";
 import notificationRoutes from "./routes/notificationRoutes.js";
+import { authenticate } from "./middleware/auth.js";
+import timeRoutes from "./time-tracker/routes/timeRoutes.js";
+import { startDailySummaryJob } from "./time-tracker/jobs/dailySummaryJob.js";
 
 dotenv.config();
 
@@ -16,6 +19,8 @@ connectDB()
   .then(async () => {
     // Ensure unique indexes exist after connection
     await ensureUserIndexes();
+    // Start scheduled jobs
+    startDailySummaryJob();
   })
   .catch(err => {
     console.error('MongoDB connection error:', err.message);
@@ -65,6 +70,6 @@ app.use("/api/tasks", taskRoutes);
 app.use("/api/groups", groupRoutes);
 app.use("/api/activities", activityRoutes);
 app.use("/api/notifications", notificationRoutes);
-
+app.use("/api/time", authenticate, timeRoutes);
 const PORT = process.env.PORT || 4000; // Using port 4000
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
