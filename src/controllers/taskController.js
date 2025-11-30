@@ -450,6 +450,35 @@ export const createTask = async (req, res) => {
       console.warn('[notifications] createTask notification pass failed', e.message || e);
     }
 
+    // Emit task_updated to assignees so they receive the new task immediately
+    try {
+      const taskPayload = task.toObject ? task.toObject() : { ...task };
+      // Compute isOverdue for payload
+      try {
+        if (taskPayload.dueDate) {
+          const due = new Date(taskPayload.dueDate);
+          taskPayload.isOverdue = due < startOfToday() && taskPayload.status !== 'completed';
+        } else {
+          taskPayload.isOverdue = false;
+        }
+      } catch (e) {
+        taskPayload.isOverdue = false;
+      }
+
+      const recipients = new Set();
+      (taskPayload.assignedTo || []).forEach(a => { if (a) recipients.add(a.toString().trim()); });
+      // Also include owner if needed (owner is the creator) - exclude actor to avoid duplicate
+      if (taskPayload.userId) recipients.add(taskPayload.userId.toString().trim());
+      // Exclude the actor (creator)
+      recipients.delete(req.auth0Id && req.auth0Id.toString().trim());
+
+      for (const rid of recipients) {
+        try { sendEventToUser(rid, 'task_updated', taskPayload); } catch (e) {}
+      }
+    } catch (e) {
+      console.warn('[sse] failed to emit task_updated on create', e.message || e);
+    }
+
     // Compute isOverdue before returning
     const taskObj = task.toObject ? task.toObject() : { ...task };
     try {
@@ -740,16 +769,52 @@ export const deleteTask = async (req, res) => {
       req.userPicture
     );
 
-    // Only owner can delete tasks
-    const task = await Task.findOne({
-      _id: req.params.id,
-      userId: req.auth0Id, // Only owner can delete (using auth0Id)
-    });
+    // Find the task by id first
+    const task = await Task.findById(req.params.id);
 
     if (!task) {
       return res.status(404).json({
         success: false,
-        message: "Task not found or you don't have permission to delete",
+        message: "Task not found",
+      });
+    }
+
+    // Permission check: allow owner or collaborators with editor/admin role
+    const taskUserIdNormalized = task.userId ? task.userId.toString().trim() : '';
+    const currentUserId = req.auth0Id && req.auth0Id.toString().trim();
+
+    let hasPermission = false;
+
+    if (taskUserIdNormalized && currentUserId && taskUserIdNormalized === currentUserId) {
+      hasPermission = true; // owner
+    }
+
+    // If not owner and task belongs to a group, check group membership/role
+    if (!hasPermission && task.groupTag && task.groupTag !== '@personal') {
+      const group = await Group.findOne({ tag: task.groupTag });
+      if (group) {
+        if (group.owner && group.owner.toString().trim() === currentUserId) {
+          hasPermission = true;
+        } else {
+          const collaborator = group.collaborators.find(c => c.userId === currentUserId || c.userId?.toString().trim() === currentUserId);
+          if (collaborator && ['editor', 'admin'].includes(collaborator.role)) {
+            hasPermission = true;
+          }
+        }
+      }
+    }
+
+    // Also allow task-level collaborators array (if present) with editor/admin
+    if (!hasPermission && task.collaborators && Array.isArray(task.collaborators)) {
+      const taskCollab = task.collaborators.find(c => (c.user && c.user.toString().trim() === currentUserId) && ['editor', 'admin'].includes(c.role));
+      if (taskCollab) hasPermission = true;
+    }
+
+    if (!hasPermission) {
+      // Return 403 to indicate authenticated but forbidden (clearer for debugging)
+      return res.status(403).json({
+        success: false,
+        message: "You don't have permission to delete this task",
       });
     }
 
@@ -771,6 +836,34 @@ export const deleteTask = async (req, res) => {
       groupTag: groupTag,
       timestamp: new Date(),
     });
+
+    // Notify assignees and owner about deletion and remove any lingering notifications
+    try {
+      const recipients = new Set();
+      if (task.userId) recipients.add(task.userId.toString().trim());
+      (task.assignedTo || []).forEach(a => { if (a) recipients.add(a.toString().trim()); });
+      // Exclude actor (deleter)
+      recipients.delete(req.auth0Id && req.auth0Id.toString().trim());
+
+      // Delete any task_assigned notifications for this task for all users
+      try {
+        await Notification.deleteMany({ type: 'task_assigned', taskId: task._id });
+      } catch (err) {
+        console.warn('[notifications] failed to bulk-delete task_assigned notifications on task delete', err && err.message ? err.message : err);
+      }
+
+      // Emit notification_removed and task_deleted to recipients
+      for (const rid of recipients) {
+        try {
+          try { sendEventToUser(rid, 'notification_removed', { type: 'task_assigned', taskId: task._id }); } catch (e) {}
+          try { sendEventToUser(rid, 'task_deleted', { taskId: task._id, groupTag }); } catch (e) {}
+        } catch (e) {
+          // ignore per-user errors
+        }
+      }
+    } catch (e) {
+      console.warn('[sse] task delete notify failed', e && e.message ? e.message : e);
+    }
 
     res.status(200).json({
       success: true,
