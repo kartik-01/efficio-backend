@@ -149,6 +149,7 @@ export const createGroup = async (req, res) => {
       type: "member_added",
       userId: req.auth0Id,
       userName: req.userName || user.name || "Unknown",
+      userPicture: (user && (user.customPicture || user.picture)) || req.userPicture || null,
       groupTag: normalizedTag,
       timestamp: new Date(),
     });
@@ -578,6 +579,7 @@ export const acceptInvitation = async (req, res) => {
         type: activityType,
         userId: req.auth0Id,
         userName: req.userName || user.name || "Unknown",
+        userPicture: (user && (user.customPicture || user.picture)) || req.userPicture || null,
         groupTag: group.tag,
         timestamp: new Date(),
       });
@@ -705,6 +707,7 @@ export const updateMemberRole = async (req, res) => {
       type: "member_role_changed",
       userId: req.auth0Id,
       userName: req.userName || user.name || "Unknown",
+      userPicture: (user && (user.customPicture || user.picture)) || req.userPicture || null,
       groupTag: group.tag,
       timestamp: new Date(),
     });
@@ -777,6 +780,7 @@ export const exitGroup = async (req, res) => {
       type: "member_removed",
       userId: req.auth0Id,
       userName: req.userName || user.name || "Unknown",
+      userPicture: (user && (user.customPicture || user.picture)) || req.userPicture || null,
       groupTag: group.tag,
       timestamp: new Date(),
     });
@@ -851,6 +855,7 @@ export const removeMember = async (req, res) => {
       type: "member_removed",
       userId: req.auth0Id,
       userName: req.userName || user.name || "Unknown",
+      userPicture: (user && (user.customPicture || user.picture)) || req.userPicture || null,
       groupTag: group.tag,
       timestamp: new Date(),
     });

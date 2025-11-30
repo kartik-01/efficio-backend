@@ -359,6 +359,9 @@ export const createTask = async (req, res) => {
       taskTitle: task.title,
       userId: req.auth0Id,
       userName: req.userName || user.name || "Unknown",
+      // Prefer the server-stored customPicture/picture so updates made in-app
+      // are used immediately instead of relying on the Auth0 token picture
+      userPicture: (user && (user.customPicture || user.picture)) || req.userPicture || null,
       groupTag: normalizedGroupTag,
       timestamp: new Date(),
     });
@@ -523,6 +526,7 @@ export const updateTask = async (req, res) => {
         taskTitle: updatedTask.title,
         userId: req.auth0Id,
         userName: req.userName || user.name || "Unknown",
+        userPicture: (user && (user.customPicture || user.picture)) || req.userPicture || null,
         groupTag: updatedTask.groupTag,
         timestamp: new Date(),
       });
@@ -580,6 +584,7 @@ export const deleteTask = async (req, res) => {
       taskTitle: taskTitle,
       userId: req.auth0Id,
       userName: req.userName || user.name || "Unknown",
+      userPicture: (user && (user.customPicture || user.picture)) || req.userPicture || null,
       groupTag: groupTag,
       timestamp: new Date(),
     });
@@ -725,13 +730,16 @@ export const updateTaskStatus = async (req, res) => {
     );
 
     // Create activity for task moved (if status changed)
+    let createdActivity = null;
     if (task.status !== status) {
-      await Activity.create({
+      createdActivity = await Activity.create({
         type: "task_moved",
         taskId: updatedTask._id,
         taskTitle: updatedTask.title,
         userId: req.auth0Id,
         userName: req.userName || user.name || "Unknown",
+        // Include the user's picture so the frontend can render it immediately
+        userPicture: req.userPicture || (user && (user.customPicture || user.picture)) || null,
         groupTag: updatedTask.groupTag,
         fromStatus: task.status,
         toStatus: status,
@@ -739,11 +747,28 @@ export const updateTaskStatus = async (req, res) => {
       });
     }
 
-    res.status(200).json({
-      success: true,
-      data: updatedTask,
-      message: "Task status updated successfully",
-    });
+    // Return the updated task and the created activity (if any) so the frontend can
+    // immediately prepend the activity to the sidebar without re-fetching activities.
+    const responsePayload = { success: true, data: updatedTask, message: "Task status updated successfully" };
+
+    if (createdActivity) {
+      // Ensure the returned activity includes the server-stored user picture
+      // (prefer `customPicture` then stored `picture`). Fetch the freshest user
+      // record to avoid returning the Auth0 token picture when the user has
+      // recently updated their portal avatar.
+      try {
+        const freshestUser = await User.findOne({ auth0Id: req.auth0Id }).select('customPicture picture');
+        const userPic = (freshestUser && (freshestUser.customPicture || freshestUser.picture)) || null;
+        const activityObj = createdActivity.toObject ? createdActivity.toObject() : { ...createdActivity };
+        activityObj.userPicture = userPic;
+        responsePayload.activity = activityObj;
+      } catch (err) {
+        // If enrichment fails, still return the created activity as-is
+        responsePayload.activity = createdActivity;
+      }
+    }
+
+    res.status(200).json(responsePayload);
   } catch (error) {
     res.status(400).json({
       success: false,
