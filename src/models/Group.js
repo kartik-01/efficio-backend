@@ -59,6 +59,12 @@ const groupSchema = new mongoose.Schema(
           enum: ["pending", "accepted", "declined"],
           default: "pending",
         },
+        // Who invited this collaborator (optional)
+        invitedBy: {
+          userId: { type: String },
+          name: { type: String },
+          picture: { type: String, default: null },
+        },
         invitedAt: {
           type: Date,
           default: Date.now,
