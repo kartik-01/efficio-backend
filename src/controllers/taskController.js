@@ -3,6 +3,13 @@ import User from "../models/User.js";
 import Activity from "../models/Activity.js";
 import Group from "../models/Group.js";
 
+// Helper: start of today (used for dueDate validation)
+const startOfToday = () => {
+  const d = new Date();
+  d.setHours(0,0,0,0);
+  return d;
+};
+
 // Helper function to get or create user - using atomic operation to prevent duplicates
 const getOrCreateUserFromAuth = async (auth0Id, email, name, picture) => {
   let user;
@@ -193,9 +200,26 @@ export const getTasks = async (req, res) => {
     const tasks = await Task.find(query)
       .sort({ createdAt: -1 });
 
+    // Compute up-to-date isOverdue flag for each task before returning
+    const today = startOfToday();
+    const tasksForResponse = tasks.map((t) => {
+      const obj = t.toObject ? t.toObject() : { ...t };
+      try {
+        if (obj.dueDate) {
+          const due = new Date(obj.dueDate);
+          obj.isOverdue = due < today && obj.status !== 'completed';
+        } else {
+          obj.isOverdue = false;
+        }
+      } catch (e) {
+        obj.isOverdue = false;
+      }
+      return obj;
+    });
+
     res.status(200).json({
       success: true,
-      data: tasks,
+      data: tasksForResponse,
     });
   } catch (error) {
     res.status(500).json({
@@ -232,9 +256,22 @@ export const getTaskById = async (req, res) => {
       });
     }
 
+    // Ensure returned task has up-to-date isOverdue flag
+    const taskObj = task.toObject ? task.toObject() : { ...task };
+    try {
+      if (taskObj.dueDate) {
+        const due = new Date(taskObj.dueDate);
+        taskObj.isOverdue = due < startOfToday() && taskObj.status !== 'completed';
+      } else {
+        taskObj.isOverdue = false;
+      }
+    } catch (e) {
+      taskObj.isOverdue = false;
+    }
+
     res.status(200).json({
       success: true,
-      data: task,
+      data: taskObj,
     });
   } catch (error) {
     res.status(500).json({
@@ -350,6 +387,17 @@ export const createTask = async (req, res) => {
       assignedUsers: assignedUsersData, // Store assigned user info
     };
 
+    // Validate dueDate unless client explicitly allows backdate
+    if (taskData.dueDate) {
+      const due = new Date(taskData.dueDate);
+      if (!req.body.allowBackdate && due < startOfToday()) {
+        return res.status(400).json({
+          success: false,
+          message: 'Due date cannot be in the past. Set allowBackdate=true to permit past dates.'
+        });
+      }
+    }
+
     const task = await Task.create(taskData);
 
     // Create activity for task creation
@@ -366,9 +414,22 @@ export const createTask = async (req, res) => {
       timestamp: new Date(),
     });
 
+    // Compute isOverdue before returning
+    const taskObj = task.toObject ? task.toObject() : { ...task };
+    try {
+      if (taskObj.dueDate) {
+        const due = new Date(taskObj.dueDate);
+        taskObj.isOverdue = due < startOfToday() && taskObj.status !== 'completed';
+      } else {
+        taskObj.isOverdue = false;
+      }
+    } catch (e) {
+      taskObj.isOverdue = false;
+    }
+
     res.status(201).json({
       success: true,
-      data: task,
+      data: taskObj,
       message: "Task created successfully",
     });
   } catch (error) {
@@ -509,6 +570,17 @@ export const updateTask = async (req, res) => {
       addStatusChangeTimestamps(task, updateData);
     }
 
+    // Validate dueDate on update unless allowBackdate is explicitly provided
+    if (updateData.dueDate) {
+      const due = new Date(updateData.dueDate);
+      if (!req.body.allowBackdate && due < startOfToday()) {
+        return res.status(400).json({
+          success: false,
+          message: 'Due date cannot be in the past. Set allowBackdate=true to permit past dates.'
+        });
+      }
+    }
+
     const updatedTask = await Task.findByIdAndUpdate(
       req.params.id,
       updateData,
@@ -532,9 +604,22 @@ export const updateTask = async (req, res) => {
       });
     }
 
+    // Compute isOverdue before returning
+    const updatedObj = updatedTask.toObject ? updatedTask.toObject() : { ...updatedTask };
+    try {
+      if (updatedObj.dueDate) {
+        const due = new Date(updatedObj.dueDate);
+        updatedObj.isOverdue = due < startOfToday() && updatedObj.status !== 'completed';
+      } else {
+        updatedObj.isOverdue = false;
+      }
+    } catch (e) {
+      updatedObj.isOverdue = false;
+    }
+
     res.status(200).json({
       success: true,
-      data: updatedTask,
+      data: updatedObj,
       message: "Task updated successfully",
     });
   } catch (error) {
@@ -749,7 +834,20 @@ export const updateTaskStatus = async (req, res) => {
 
     // Return the updated task and the created activity (if any) so the frontend can
     // immediately prepend the activity to the sidebar without re-fetching activities.
-    const responsePayload = { success: true, data: updatedTask, message: "Task status updated successfully" };
+    // Compute isOverdue for updatedTask before returning
+    const updatedObj = updatedTask.toObject ? updatedTask.toObject() : { ...updatedTask };
+    try {
+      if (updatedObj.dueDate) {
+        const due = new Date(updatedObj.dueDate);
+        updatedObj.isOverdue = due < startOfToday() && updatedObj.status !== 'completed';
+      } else {
+        updatedObj.isOverdue = false;
+      }
+    } catch (e) {
+      updatedObj.isOverdue = false;
+    }
+
+    const responsePayload = { success: true, data: updatedObj, message: "Task status updated successfully" };
 
     if (createdActivity) {
       // Ensure the returned activity includes the server-stored user picture
@@ -816,9 +914,22 @@ export const updateTaskProgress = async (req, res) => {
       }
     );
 
+    // Compute isOverdue before returning
+    const updatedObj = updatedTask.toObject ? updatedTask.toObject() : { ...updatedTask };
+    try {
+      if (updatedObj.dueDate) {
+        const due = new Date(updatedObj.dueDate);
+        updatedObj.isOverdue = due < startOfToday() && updatedObj.status !== 'completed';
+      } else {
+        updatedObj.isOverdue = false;
+      }
+    } catch (e) {
+      updatedObj.isOverdue = false;
+    }
+
     res.status(200).json({
       success: true,
-      data: updatedTask,
+      data: updatedObj,
       message: "Task progress updated successfully",
     });
   } catch (error) {
