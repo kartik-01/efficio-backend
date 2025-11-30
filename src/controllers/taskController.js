@@ -4,6 +4,7 @@ import Activity from "../models/Activity.js";
 import Group from "../models/Group.js";
 import Notification from "../models/Notification.js";
 import { sendEventToUser } from "../utils/sseManager.js";
+import { emitActivity } from "../utils/activityEmitter.js";
 
 // Helper: start of today (used for dueDate validation)
 const startOfToday = () => {
@@ -403,7 +404,7 @@ export const createTask = async (req, res) => {
     const task = await Task.create(taskData);
 
     // Create activity for task creation
-    await Activity.create({
+    const createdActivity = await Activity.create({
       type: "task_created",
       taskId: task._id,
       taskTitle: task.title,
@@ -415,6 +416,13 @@ export const createTask = async (req, res) => {
       groupTag: normalizedGroupTag,
       timestamp: new Date(),
     });
+
+    // Emit activity to relevant group members (non-blocking)
+    try {
+      await emitActivity(createdActivity);
+    } catch (e) {
+      // ignore emitter errors
+    }
 
     // Upsert task assignment notifications for assignees and emit SSE
     try {
@@ -657,7 +665,7 @@ export const updateTask = async (req, res) => {
 
     // Create activity for task update (if significant changes)
     if (updateData.title || updateData.description || updateData.status) {
-      await Activity.create({
+      const updatedActivity = await Activity.create({
         type: "task_updated",
         taskId: updatedTask._id,
         taskTitle: updatedTask.title,
@@ -667,6 +675,13 @@ export const updateTask = async (req, res) => {
         groupTag: updatedTask.groupTag,
         timestamp: new Date(),
       });
+
+      // Emit activity to relevant group members (non-blocking)
+      try {
+        await emitActivity(updatedActivity);
+      } catch (e) {
+        // ignore emitter errors
+      }
     }
 
     // Compute isOverdue before returning
@@ -826,7 +841,7 @@ export const deleteTask = async (req, res) => {
     await Task.findByIdAndDelete(req.params.id);
 
     // Create activity for task deletion
-    await Activity.create({
+    const deletedActivity = await Activity.create({
       type: "task_deleted",
       taskId: task._id,
       taskTitle: taskTitle,
@@ -836,6 +851,13 @@ export const deleteTask = async (req, res) => {
       groupTag: groupTag,
       timestamp: new Date(),
     });
+
+    // Emit activity to relevant group members (non-blocking)
+    try {
+      await emitActivity(deletedActivity);
+    } catch (e) {
+      // ignore emitter errors
+    }
 
     // Notify assignees and owner about deletion and remove any lingering notifications
     try {
@@ -1021,6 +1043,13 @@ export const updateTaskStatus = async (req, res) => {
         toStatus: status,
         timestamp: new Date(),
       });
+
+      // Emit activity to relevant group members (non-blocking)
+      try {
+        await emitActivity(createdActivity);
+      } catch (e) {
+        // ignore emitter errors
+      }
     }
 
     // Return the updated task and the created activity (if any) so the frontend can

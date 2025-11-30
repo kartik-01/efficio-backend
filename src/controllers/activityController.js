@@ -1,6 +1,7 @@
 import Activity from "../models/Activity.js";
 import User from "../models/User.js";
 import Group from "../models/Group.js";
+import { emitActivity } from '../utils/activityEmitter.js';
 
 // Helper function to get or create user
 const getOrCreateUserFromAuth = async (auth0Id, email, name, picture) => {
@@ -181,6 +182,13 @@ export const createActivity = async (req, res) => {
       userName: req.userName || user.name || "Unknown",
       timestamp: req.body.timestamp || new Date(),
     });
+
+    // Emit activity to relevant group members (non-blocking)
+    try {
+      await emitActivity(activity);
+    } catch (e) {
+      // ignore emitter errors
+    }
 
     res.status(201).json({
       success: true,
