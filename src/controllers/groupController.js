@@ -2,6 +2,8 @@ import Group from "../models/Group.js";
 import User from "../models/User.js";
 import Task from "../models/Task.js";
 import Activity from "../models/Activity.js";
+import Notification from "../models/Notification.js";
+import { sendEventToUser } from "../utils/sseManager.js";
 
 // Helper function to get or create user (preserves custom name and picture)
 const getOrCreateUserFromAuth = async (auth0Id, email, name, picture) => {
@@ -564,6 +566,25 @@ export const inviteUser = async (req, res) => {
     }
 
     const updatedGroup = await Group.findById(req.params.id);
+
+    // Upsert invitation notification for the invited user and emit SSE
+    try {
+      await Notification.findOneAndUpdate(
+        { userId: userId, type: 'invitation', groupId: updatedGroup._id },
+        {
+          userId: userId,
+          type: 'invitation',
+          groupId: updatedGroup._id,
+          groupTag: updatedGroup.tag,
+          read: false,
+          createdAt: new Date(),
+        },
+        { upsert: true, new: true }
+      );
+      try { sendEventToUser(userId, 'notification', { type: 'invitation', groupId: updatedGroup._id, groupName: updatedGroup.name, groupTag: updatedGroup.tag }); } catch (e) {}
+    } catch (e) {
+      console.warn('[notifications] invite upsert failed', e.message || e);
+    }
 
     res.status(200).json({
       success: true,

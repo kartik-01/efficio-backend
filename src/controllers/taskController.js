@@ -2,6 +2,8 @@ import Task from "../models/Task.js";
 import User from "../models/User.js";
 import Activity from "../models/Activity.js";
 import Group from "../models/Group.js";
+import Notification from "../models/Notification.js";
+import { sendEventToUser } from "../utils/sseManager.js";
 
 // Helper: start of today (used for dueDate validation)
 const startOfToday = () => {
@@ -414,6 +416,40 @@ export const createTask = async (req, res) => {
       timestamp: new Date(),
     });
 
+    // Upsert task assignment notifications for assignees and emit SSE
+    try {
+      if (task.assignedTo && Array.isArray(task.assignedTo) && task.assignedTo.length > 0) {
+        // Try to find groupId if available
+        const group = task.groupTag ? await Group.findOne({ tag: task.groupTag }) : null;
+        for (const assignee of task.assignedTo) {
+          const userIdStr = assignee ? assignee.toString().trim() : null;
+          if (!userIdStr) continue;
+          try {
+            await Notification.findOneAndUpdate(
+              { userId: userIdStr, type: 'task_assigned', taskId: task._id },
+              {
+                userId: userIdStr,
+                type: 'task_assigned',
+                taskId: task._id,
+                groupId: group?._id,
+                groupTag: task.groupTag,
+                read: false,
+                createdAt: task.createdAt || new Date(),
+              },
+              { upsert: true, new: true }
+            );
+            // Emit SSE notification to user
+            try { sendEventToUser(userIdStr, 'notification', { type: 'task_assigned', taskId: task._id, taskTitle: task.title, groupTag: task.groupTag }); } catch (e) {}
+          } catch (e) {
+            // continue on errors per-user
+            console.warn('[notifications] failed to upsert for assignee', userIdStr, e.message || e);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[notifications] createTask notification pass failed', e.message || e);
+    }
+
     // Compute isOverdue before returning
     const taskObj = task.toObject ? task.toObject() : { ...task };
     try {
@@ -615,6 +651,68 @@ export const updateTask = async (req, res) => {
       }
     } catch (e) {
       updatedObj.isOverdue = false;
+    }
+
+    // Handle notifications for added/removed assignees
+    try {
+      const oldAssigned = (task.assignedTo || []).map(a => a ? a.toString().trim() : '').filter(Boolean);
+      const newAssigned = (updatedTask.assignedTo || []).map(a => a ? a.toString().trim() : '').filter(Boolean);
+
+      const added = newAssigned.filter(a => !oldAssigned.includes(a));
+      const removed = oldAssigned.filter(a => !newAssigned.includes(a));
+
+      // Upsert notifications for added assignees
+      if (added.length > 0) {
+        const group = updatedTask.groupTag ? await Group.findOne({ tag: updatedTask.groupTag }) : null;
+        for (const userIdStr of added) {
+          try {
+            await Notification.findOneAndUpdate(
+              { userId: userIdStr, type: 'task_assigned', taskId: updatedTask._id },
+              {
+                userId: userIdStr,
+                type: 'task_assigned',
+                taskId: updatedTask._id,
+                groupId: group?._id,
+                groupTag: updatedTask.groupTag,
+                read: false,
+                createdAt: new Date(),
+              },
+              { upsert: true, new: true }
+            );
+            try { sendEventToUser(userIdStr, 'notification', { type: 'task_assigned', taskId: updatedTask._id, taskTitle: updatedTask.title, groupTag: updatedTask.groupTag }); } catch (e) {}
+          } catch (e) {
+            console.warn('[notifications] upsert for added assignee failed', userIdStr, e.message || e);
+          }
+        }
+      }
+
+      // Remove notifications for removed assignees and emit removed event
+      if (removed.length > 0) {
+        for (const userIdStr of removed) {
+          try {
+            await Notification.deleteMany({ userId: userIdStr, type: 'task_assigned', taskId: updatedTask._id });
+            try { sendEventToUser(userIdStr, 'notification_removed', { type: 'task_assigned', taskId: updatedTask._id }); } catch (e) {}
+          } catch (e) {
+            console.warn('[notifications] delete for removed assignee failed', userIdStr, e.message || e);
+          }
+        }
+      }
+
+      // Emit task_updated event to interested users (owner + assignees), excluding actor
+      try {
+        const recipients = new Set();
+        if (updatedTask.userId) recipients.add(updatedTask.userId.toString().trim());
+        (updatedTask.assignedTo || []).forEach(a => { if (a) recipients.add(a.toString().trim()); });
+        recipients.delete(req.auth0Id && req.auth0Id.toString().trim());
+        const payload = updatedObj;
+        for (const rid of recipients) {
+          try { sendEventToUser(rid, 'task_updated', payload); } catch (e) {}
+        }
+      } catch (e) {
+        console.warn('[sse] failed to emit task_updated', e.message || e);
+      }
+    } catch (e) {
+      console.warn('[notifications] post-update notification pass failed', e.message || e);
     }
 
     res.status(200).json({
@@ -864,6 +962,19 @@ export const updateTaskStatus = async (req, res) => {
         // If enrichment fails, still return the created activity as-is
         responsePayload.activity = createdActivity;
       }
+    }
+
+    // Emit task_updated SSE to owner and assignees (excluding actor)
+    try {
+      const recipients = new Set();
+      if (updatedObj.userId) recipients.add(updatedObj.userId.toString().trim());
+      (updatedObj.assignedTo || []).forEach(a => { if (a) recipients.add(a.toString().trim()); });
+      recipients.delete(req.auth0Id && req.auth0Id.toString().trim());
+      for (const rid of recipients) {
+        try { sendEventToUser(rid, 'task_updated', updatedObj); } catch (e) {}
+      }
+    } catch (e) {
+      console.warn('[sse] task status update emit failed', e.message || e);
     }
 
     res.status(200).json(responsePayload);

@@ -92,15 +92,15 @@ export const getNotifications = async (req, res) => {
 
     const accessibleGroupTags = accessibleGroups.map(g => g.tag);
 
-    // Get tasks assigned to user in groups (created in last 7 days, not completed)
+    // Get tasks assigned to user in groups (not completed)
+    // NOTE: we intentionally do not limit by createdAt here to avoid missing older assignments
     const assignedTasks = await Task.find({
       groupTag: { $in: accessibleGroupTags },
       assignedTo: { $in: [req.auth0Id] },
       status: { $ne: "completed" },
-      createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }, // Last 7 days
     })
       .sort({ createdAt: -1 })
-      .limit(10)
+      .limit(50)
       .lean();
 
     // Filter to only show tasks from groups where user has accepted access
@@ -242,6 +242,20 @@ export const getNotifications = async (req, res) => {
       message: "Error fetching notifications",
       error: error.message,
     });
+  }
+};
+
+// Development helper: return raw Notification documents for a given user
+export const getRawNotificationsForUser = async (req, res) => {
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(404).json({ success: false, message: 'Not found' });
+  }
+  try {
+    const { userId } = req.params;
+    const docs = await Notification.find({ userId }).sort({ createdAt: -1 }).lean();
+    res.status(200).json({ success: true, data: docs });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Error fetching raw notifications', error: err.message });
   }
 };
 

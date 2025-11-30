@@ -1,5 +1,5 @@
 import express from "express";
-import { getNotifications, markNotificationAsRead, markAllNotificationsAsRead } from "../controllers/notificationController.js";
+import { getNotifications, markNotificationAsRead, markAllNotificationsAsRead, getRawNotificationsForUser } from "../controllers/notificationController.js";
 import { authenticate } from "../middleware/auth.js";
 
 const router = express.Router();
@@ -11,6 +11,11 @@ router.use(authenticate);
 router.get("/", getNotifications);
 router.put("/:notificationId/read", markNotificationAsRead);
 router.put("/read-all", markAllNotificationsAsRead);
+
+// Dev-only: inspect raw Notification documents for a user
+if (process.env.NODE_ENV !== 'production') {
+	router.get('/debug/:userId', getRawNotificationsForUser);
+}
 
 export default router;
 
