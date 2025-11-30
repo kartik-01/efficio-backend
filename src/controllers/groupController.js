@@ -86,7 +86,7 @@ export const createGroup = async (req, res) => {
       req.userPicture
     );
 
-    const { name, tag, collaborators = [] } = req.body;
+    const { name, tag, collaborators = [], color } = req.body;
 
     if (!name || !tag) {
       return res.status(400).json({
@@ -129,12 +129,13 @@ export const createGroup = async (req, res) => {
       })),
     ];
 
-    // Create group
+    // Create group (include color if provided; otherwise schema default applies)
     const group = await Group.create({
       name,
       tag: normalizedTag,
       owner: req.auth0Id,
       collaborators: collaboratorsList,
+      color: color ? color : undefined,
     });
 
     // Add group to owner's groups array
