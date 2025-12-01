@@ -7,6 +7,7 @@ import {
   deleteTask,
   updateTaskStatus,
   updateTaskProgress,
+  configureTimePlanning,
 } from "../controllers/taskController.js";
 import { authenticate } from "../middleware/auth.js";
 
@@ -32,6 +33,9 @@ router.patch("/:id/status", updateTaskStatus);
 
 // Update task progress
 router.patch("/:id/progress", updateTaskProgress);
+
+// Configure time planning for a task
+router.patch("/:id/time-planning", configureTimePlanning);
 
 // Delete task
 router.delete("/:id", deleteTask);

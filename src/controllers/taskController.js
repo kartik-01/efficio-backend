@@ -5,6 +5,7 @@ import Group from "../models/Group.js";
 import Notification from "../models/Notification.js";
 import { sendEventToUser } from "../utils/sseManager.js";
 import { emitActivity } from "../utils/activityEmitter.js";
+import { generatePlansForInProgressTask, cancelFuturePlans } from "../time-tracker/services/planGenerationService.js";
 
 // Helper: start of today (used for dueDate validation)
 const startOfToday = () => {
@@ -642,6 +643,7 @@ export const updateTask = async (req, res) => {
     }
 
     // Add status change timestamps if status is being updated
+    const oldStatus = task.status;
     if (updateData.status) {
       addStatusChangeTimestamps(task, updateData);
     }
@@ -665,6 +667,31 @@ export const updateTask = async (req, res) => {
         runValidators: true,
       }
     );
+
+    // Handle time planning based on status change
+    if (updateData.status && oldStatus !== updateData.status) {
+      // Task moved to in-progress: generate plans if auto-planning is enabled
+      if (updateData.status === "in-progress" && oldStatus !== "in-progress") {
+        if (updatedTask.timePlanning?.enabled && updatedTask.timePlanning?.autoPlanOnStart) {
+          try {
+            await generatePlansForInProgressTask(updatedTask);
+          } catch (error) {
+            console.error("Error generating plans for task:", error);
+            // Don't fail the request if plan generation fails
+          }
+        }
+      }
+      
+      // Task moved out of in-progress: cancel future plans
+      if (oldStatus === "in-progress" && updateData.status !== "in-progress") {
+        try {
+          await cancelFuturePlans(req.auth0Id, task._id);
+        } catch (error) {
+          console.error("Error canceling future plans:", error);
+          // Don't fail the request if plan cancellation fails
+        }
+      }
+    }
 
     // Create activity for task update (if significant changes)
     if (updateData.title || updateData.description || updateData.status) {
@@ -1030,6 +1057,31 @@ export const updateTaskStatus = async (req, res) => {
       }
     );
 
+    // Handle time planning based on status change
+    if (task.status !== status) {
+      // Task moved to in-progress: generate plans if auto-planning is enabled
+      if (status === "in-progress" && task.status !== "in-progress") {
+        if (updatedTask.timePlanning?.enabled && updatedTask.timePlanning?.autoPlanOnStart) {
+          try {
+            await generatePlansForInProgressTask(updatedTask);
+          } catch (error) {
+            console.error("Error generating plans for task:", error);
+            // Don't fail the request if plan generation fails
+          }
+        }
+      }
+      
+      // Task moved out of in-progress: cancel future plans
+      if (task.status === "in-progress" && status !== "in-progress") {
+        try {
+          await cancelFuturePlans(req.auth0Id, task._id);
+        } catch (error) {
+          console.error("Error canceling future plans:", error);
+          // Don't fail the request if plan cancellation fails
+        }
+      }
+    }
+
     // Create activity for task moved (if status changed)
     let createdActivity = null;
     if (task.status !== status) {
@@ -1107,6 +1159,101 @@ export const updateTaskStatus = async (req, res) => {
     res.status(400).json({
       success: false,
       message: "Error updating task status",
+      error: error.message,
+    });
+  }
+};
+
+// Configure time planning for a task
+export const configureTimePlanning = async (req, res) => {
+  try {
+    // Get or create user from Auth0 token
+    const user = await getOrCreateUserFromAuth(
+      req.auth0Id,
+      req.userEmail,
+      req.userName,
+      req.userPicture
+    );
+
+    // Find task and verify ownership
+    const task = await Task.findOne({
+      _id: req.params.id,
+      userId: req.auth0Id, // Only task owner can configure time planning
+    });
+
+    if (!task) {
+      return res.status(404).json({
+        success: false,
+        message: "Task not found or you don't have permission",
+      });
+    }
+
+    const {
+      enabled,
+      defaultStartTime,
+      defaultEndTime,
+      defaultDuration,
+      categoryId,
+      recurrence,
+      autoPlanOnStart,
+      showPlanningPrompt
+    } = req.body;
+
+    // Build timePlanning update object
+    const timePlanningUpdate = {};
+    
+    if (enabled !== undefined) timePlanningUpdate['timePlanning.enabled'] = enabled;
+    if (defaultStartTime !== undefined) timePlanningUpdate['timePlanning.defaultStartTime'] = defaultStartTime;
+    if (defaultEndTime !== undefined) timePlanningUpdate['timePlanning.defaultEndTime'] = defaultEndTime;
+    if (defaultDuration !== undefined) timePlanningUpdate['timePlanning.defaultDuration'] = defaultDuration;
+    if (categoryId !== undefined) timePlanningUpdate['timePlanning.categoryId'] = categoryId;
+    if (autoPlanOnStart !== undefined) timePlanningUpdate['timePlanning.autoPlanOnStart'] = autoPlanOnStart;
+    if (showPlanningPrompt !== undefined) timePlanningUpdate['timePlanning.showPlanningPrompt'] = showPlanningPrompt;
+    
+    // Handle recurrence object
+    if (recurrence !== undefined) {
+      if (typeof recurrence === 'object') {
+        if (recurrence.type !== undefined) timePlanningUpdate['timePlanning.recurrence.type'] = recurrence.type;
+        if (recurrence.endDate !== undefined) timePlanningUpdate['timePlanning.recurrence.endDate'] = recurrence.endDate;
+      } else {
+        timePlanningUpdate['timePlanning.recurrence.type'] = recurrence;
+      }
+    }
+
+    // If enabling and task is already in-progress, generate plans immediately
+    const wasEnabled = task.timePlanning?.enabled;
+    const willBeEnabled = enabled !== undefined ? enabled : wasEnabled;
+
+    const updatedTask = await Task.findByIdAndUpdate(
+      req.params.id,
+      { $set: timePlanningUpdate },
+      {
+        new: true,
+        runValidators: true,
+      }
+    );
+
+    // If enabling time planning and task is in-progress, generate plans
+    if (!wasEnabled && willBeEnabled && task.status === "in-progress") {
+      if (updatedTask.timePlanning?.autoPlanOnStart) {
+        try {
+          await generatePlansForInProgressTask(updatedTask);
+        } catch (error) {
+          console.error("Error generating plans after enabling time planning:", error);
+          // Don't fail the request
+        }
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      data: updatedTask,
+      message: "Time planning configured successfully",
+    });
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: "Error configuring time planning",
       error: error.message,
     });
   }

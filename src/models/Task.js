@@ -131,6 +131,70 @@ const taskSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Project",
     },
+    // Time planning template (for recurring time blocks when task is in-progress)
+    timePlanning: {
+      // Whether time planning is enabled for this task
+      enabled: {
+        type: Boolean,
+        default: false
+      },
+      // Default time slot (template)
+      defaultStartTime: {
+        type: String, // "HH:MM" format, e.g., "09:00"
+        default: null
+      },
+      defaultEndTime: {
+        type: String, // "HH:MM" format, e.g., "10:30"
+        default: null
+      },
+      // Alternative: duration in minutes (if endTime not provided)
+      defaultDuration: {
+        type: Number, // minutes
+        default: null
+      },
+      // Category for time blocks (auto-classified or user-selected)
+      categoryId: {
+        type: String,
+        enum: ["work", "learning", "admin", "health", "personal", "rest"],
+        default: null
+      },
+      // Recurrence pattern when task is in-progress
+      recurrence: {
+        type: {
+          type: String,
+          enum: ["none", "daily", "weekdays"], // Start simple, can add "weekly", "custom" later
+          default: "none"
+        },
+        // For future: end date for recurring plans
+        endDate: {
+          type: Date,
+          default: null
+        },
+        // When recurrence was activated (task moved to in-progress)
+        activatedAt: {
+          type: Date,
+          default: null
+        }
+      },
+      // User preferences
+      autoPlanOnStart: {
+        type: Boolean,
+        default: false // If true, automatically create plans when task goes in-progress
+      },
+      showPlanningPrompt: {
+        type: Boolean,
+        default: true // Whether to show popup when task moves to in-progress
+      },
+      // Metadata
+      lastPlanGenerated: {
+        type: Date,
+        default: null // Track when we last generated plan instances
+      },
+      planInstanceCount: {
+        type: Number,
+        default: 0 // Number of active plan instances
+      }
+    }
   },
   {
     timestamps: true,
