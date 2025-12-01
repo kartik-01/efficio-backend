@@ -193,7 +193,11 @@ const taskSchema = new mongoose.Schema(
       planInstanceCount: {
         type: Number,
         default: 0 // Number of active plan instances
-      }
+      },
+      // Dates when virtual plans should be excluded (user deleted the plan for that day)
+      excludedDates: [{
+        type: String, // ISO date string format: "YYYY-MM-DD"
+      }]
     }
   },
   {
