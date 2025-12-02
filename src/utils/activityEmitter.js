@@ -31,12 +31,11 @@ export async function emitActivity(activity) {
     // Prepare base payload and sanitize/enrich actor information
     const base = activity.toObject ? activity.toObject() : { ...activity };
 
-    // Lookup actor's server-side profile. We will NOT include Auth0/Google picture by default.
+    // Lookup actor's server-side profile to enrich the payload with the latest name/picture.
     let actor = null;
     if (base.userId) {
       try {
-        // Include email so we can fall back to it when name is missing
-        actor = await User.findOne({ auth0Id: base.userId }).select('auth0Id name email customPicture');
+        actor = await User.findOne({ auth0Id: base.userId }).select('auth0Id name email customPicture picture');
       } catch (err) {
         actor = null;
       }
@@ -56,15 +55,12 @@ export async function emitActivity(activity) {
 
     const payload = { ...base };
     if (actor) {
-      // Only include a picture if the user explicitly uploaded a customPicture
-      payload.userPicture = actor.customPicture ? actor.customPicture : null;
-      // Provide initials so the frontend can show a consistent avatar even when we omit full name/picture
-      payload.userInitials = computeInitials(actor.name || actor.email || null);
-      // Provide email so frontends can display it when name is missing
+      const displayName = actor.name || actor.email || null;
+      const avatarUrl = actor.customPicture || actor.picture || null;
+      payload.userPicture = avatarUrl;
+      payload.userInitials = computeInitials(displayName || null);
       payload.userEmail = actor.email || null;
-      // Only include full name when the user has customized their profile (indicated by customPicture)
-      // Fall back to email if name is missing and owner view requires it
-      payload.userName = actor.customPicture ? (actor.name || actor.email || null) : null;
+      payload.userName = displayName;
     } else {
       payload.userPicture = null;
       payload.userInitials = computeInitials(base.userName || null);
@@ -76,13 +72,6 @@ export async function emitActivity(activity) {
       try {
         // Clone payload per-recipient so we can optionally reveal more information
         const perPayload = { ...payload };
-
-        // Reveal actor's name to the group owner only (owners often need identity to manage invites/assignments)
-        // Keep pictures private unless the actor uploaded a customPicture.
-        if (actor && group && group.owner && rid === group.owner.toString().trim()) {
-          // Reveal name to owner, but fall back to email if name is missing
-          perPayload.userName = actor.name || actor.email || null;
-        }
 
         sendEventToUser(rid, 'activity', perPayload);
       } catch (e) {

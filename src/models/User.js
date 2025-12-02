@@ -74,5 +74,5 @@ const userSchema = new mongoose.Schema(
 // Note: auth0Id already has an index from unique: true, so we don't need to create it again
 userSchema.index({ email: 1 });
 
-export default mongoose.model("User", userSchema);
+export default mongoose.models.User || mongoose.model("User", userSchema);
 

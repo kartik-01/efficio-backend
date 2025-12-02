@@ -330,9 +330,9 @@ export const createTask = async (req, res) => {
       // If assignedTo is provided, get user info from group collaborators
       if (restBody.assignedTo && Array.isArray(restBody.assignedTo) && restBody.assignedTo.length > 0) {
         // Normalize assignedTo to ensure all values are strings (auth0Id)
-        normalizedAssignedTo = restBody.assignedTo.map(id => id?.toString().trim()).filter(Boolean);
+        const candidateIds = restBody.assignedTo.map(id => id?.toString().trim()).filter(Boolean);
         
-        for (const userId of normalizedAssignedTo) {
+        for (const userId of candidateIds) {
           // Check if it's the owner
           if (userId === group.owner || userId === group.owner.toString().trim()) {
             const ownerUser = await User.findOne({ auth0Id: userId });
@@ -362,12 +362,13 @@ export const createTask = async (req, res) => {
             }
           }
         }
+        // Only keep the validated assignee IDs (those we resolved into assignedUsersData)
+        normalizedAssignedTo = assignedUsersData.map(u => u.userId);
       }
     } else if (restBody.assignedTo && Array.isArray(restBody.assignedTo) && restBody.assignedTo.length > 0) {
       // For personal tasks, normalize and get user info from User model
-      normalizedAssignedTo = restBody.assignedTo.map(id => id?.toString().trim()).filter(Boolean);
-      
-      for (const userId of normalizedAssignedTo) {
+      const candidateIds = restBody.assignedTo.map(id => id?.toString().trim()).filter(Boolean);
+      for (const userId of candidateIds) {
         const userIdNormalized = userId.toString().trim();
         const assignedUser = await User.findOne({ auth0Id: userIdNormalized });
         if (assignedUser) {
@@ -379,7 +380,9 @@ export const createTask = async (req, res) => {
           });
         }
       }
-    }
+        // Normalize assignedTo to the validated list
+        normalizedAssignedTo = assignedUsersData.map(u => u.userId);
+      }
 
     // Build taskData object with normalized values
     const taskData = {
@@ -439,10 +442,10 @@ export const createTask = async (req, res) => {
                 userId: userIdStr,
                 type: 'task_assigned',
                 taskId: task._id,
-                groupId: group?._id,
                 groupTag: task.groupTag,
-                read: false,
-                createdAt: task.createdAt || new Date(),
+                groupName: group?.name || null,
+                taskTitle: task.title,
+                acknowledgedAt: null,
               },
               { upsert: true, new: true }
             );
@@ -604,8 +607,8 @@ export const updateTask = async (req, res) => {
         }
       }
       
-      // Update assignedTo with normalized values
-      updateData.assignedTo = normalizedAssignedTo;
+      // Update assignedTo with only the validated user IDs (from assignedUsersData)
+      updateData.assignedTo = assignedUsersData.length > 0 ? assignedUsersData.map(u => u.userId) : [];
       updateData.assignedUsers = assignedUsersData;
     }
 
@@ -716,10 +719,10 @@ export const updateTask = async (req, res) => {
                 userId: userIdStr,
                 type: 'task_assigned',
                 taskId: updatedTask._id,
-                groupId: group?._id,
                 groupTag: updatedTask.groupTag,
-                read: false,
-                createdAt: new Date(),
+                groupName: group?.name || null,
+                taskTitle: updatedTask.title,
+                acknowledgedAt: null,
               },
               { upsert: true, new: true }
             );

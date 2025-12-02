@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import { connectDB } from "./config/db.js";
-import { ensureUserIndexes } from "./utils/ensureIndexes.js";
+import { ensureUserIndexes, ensureNotificationIndexes } from "./utils/ensureIndexes.js";
 import userRoutes from "./routes/userRoutes.js";
 import taskRoutes from "./routes/taskRoutes.js";
 import groupRoutes from "./routes/groupRoutes.js";
@@ -20,6 +20,7 @@ connectDB()
   .then(async () => {
     // Ensure unique indexes exist after connection
     await ensureUserIndexes();
+    await ensureNotificationIndexes();
     // Start scheduled jobs
     startDailySummaryJob();
   })

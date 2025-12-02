@@ -576,8 +576,15 @@ export const inviteUser = async (req, res) => {
           type: 'invitation',
           groupId: updatedGroup._id,
           groupTag: updatedGroup.tag,
-          read: false,
-          createdAt: new Date(),
+          groupName: updatedGroup.name,
+          invitedAt: new Date(),
+          acknowledgedAt: null,
+          metadata: {
+            invitedBy: {
+              userId: req.auth0Id,
+              name: req.userName || user.name || 'Unknown',
+            },
+          },
         },
         { upsert: true, new: true }
       );
@@ -661,6 +668,13 @@ export const acceptInvitation = async (req, res) => {
       });
     }
 
+    // Clear pending invitation notifications for this group
+    try {
+      await Notification.deleteMany({ userId: req.auth0Id, type: 'invitation', groupId: group._id });
+    } catch (e) {
+      console.warn('[notifications] failed to delete invite notification on accept', e.message || e);
+    }
+
     res.status(200).json({
       success: true,
       data: group,
@@ -706,6 +720,13 @@ export const declineInvitation = async (req, res) => {
     if (collaborator) {
       collaborator.status = "declined";
       await group.save();
+    }
+
+    // Remove pending notification since invite is no longer actionable
+    try {
+      await Notification.deleteMany({ userId: req.auth0Id, type: 'invitation', groupId: group._id });
+    } catch (e) {
+      console.warn('[notifications] failed to delete invite notification on decline', e.message || e);
     }
 
     res.status(200).json({

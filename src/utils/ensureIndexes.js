@@ -1,4 +1,5 @@
 import User from "../models/User.js";
+import Notification from "../models/Notification.js";
 
 /**
  * Clean up duplicate users - keep the most recently updated one for each auth0Id
@@ -101,6 +102,50 @@ export const ensureUserIndexes = async () => {
     console.error("Error ensuring indexes:", error);
     // Don't throw - allow server to start even if index creation fails
     // The unique constraint in the schema should still work
+  }
+};
+
+const safelyCreateIndex = async (collection, keys, options = {}) => {
+  try {
+    await collection.createIndex(keys, { ...options, background: true });
+  } catch (error) {
+    if (error.code === 85 || error.codeName === "IndexOptionsConflict") {
+      return;
+    }
+    throw error;
+  }
+};
+
+export const ensureNotificationIndexes = async () => {
+  try {
+    const existingIndexes = await Notification.collection.indexes();
+    const legacyIndex = existingIndexes.find(
+      (idx) => idx.name === "userId_1_type_1_groupId_1" && !idx.partialFilterExpression
+    );
+
+    if (legacyIndex) {
+      try {
+        await Notification.collection.dropIndex("userId_1_type_1_groupId_1");
+        console.log("✓ Dropped legacy notification index userId_1_type_1_groupId_1");
+      } catch (dropError) {
+        console.warn("Warning: Could not drop legacy notification index:", dropError.message);
+      }
+    }
+
+    await safelyCreateIndex(Notification.collection, { userId: 1, createdAt: -1 });
+    await safelyCreateIndex(Notification.collection, { userId: 1, type: 1, taskId: 1 }, {
+      unique: true,
+      sparse: true,
+      partialFilterExpression: { type: "task_assigned", taskId: { $exists: true } },
+    });
+    await safelyCreateIndex(Notification.collection, { userId: 1, type: 1, groupId: 1 }, {
+      unique: true,
+      sparse: true,
+      partialFilterExpression: { type: "invitation", groupId: { $exists: true } },
+    });
+    console.log("✓ Notification indexes verified/created");
+  } catch (error) {
+    console.error("Error ensuring notification indexes:", error);
   }
 };
 

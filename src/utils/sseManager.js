@@ -23,24 +23,29 @@ function removeClient(userId, res) {
 }
 
 function sendEventToUser(userId, eventName, data) {
-  try {
-    if (!userId) return false;
-    const set = clientsMap.get(userId);
-    if (!set || set.size === 0) return false;
-    const payload = typeof data === 'string' ? data : JSON.stringify(data);
-    for (const res of set) {
-      try {
-        res.write(`event: ${eventName}\n`);
-        res.write(`data: ${payload}\n\n`);
-      } catch (e) {
-        if (process.env.NODE_ENV !== 'production') console.error('[sse] write failed', e.message || e);
-      }
+  if (!userId) return false;
+  const set = clientsMap.get(userId);
+  if (!set || set.size === 0) return false;
+
+  const payload = typeof data === 'string' ? data : JSON.stringify(data);
+  let delivered = false;
+
+  for (const res of Array.from(set)) {
+    try {
+      res.write(`event: ${eventName}\n`);
+      res.write(`data: ${payload}\n\n`);
+      delivered = true;
+    } catch (e) {
+      // Remove broken connections quietly
+      set.delete(res);
     }
-    return true;
-  } catch (e) {
-    if (process.env.NODE_ENV !== 'production') console.error('[sse] sendEventToUser failed', e.message || e);
-    return false;
   }
+
+  if (set.size === 0) {
+    clientsMap.delete(userId);
+  }
+
+  return delivered;
 }
 
 function broadcast(eventName, data) {

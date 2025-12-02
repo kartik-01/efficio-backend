@@ -141,5 +141,5 @@ taskSchema.index({ projectId: 1 });
 taskSchema.index({ groupTag: 1, createdAt: -1 });
 taskSchema.index({ groupTag: 1, status: 1 });
 
-export default mongoose.model("Task", taskSchema);
+export default mongoose.models.Task || mongoose.model("Task", taskSchema);
 

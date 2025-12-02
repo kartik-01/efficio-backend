@@ -2,44 +2,52 @@ import mongoose from "mongoose";
 
 const notificationSchema = new mongoose.Schema(
   {
-    // User who owns this notification (auth0Id)
     userId: {
       type: String,
       required: true,
       index: true,
+      trim: true,
     },
-    // Type of notification
     type: {
       type: String,
-      enum: ["invitation", "task_assigned"],
       required: true,
+      enum: ["invitation", "task_assigned"],
     },
-    // Related task ID (for task_assigned)
     taskId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Task",
+      default: null,
     },
-    // Related group ID (for invitation or task_assigned)
+    taskTitle: {
+      type: String,
+      default: null,
+    },
     groupId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Group",
+      default: null,
     },
-    // Group tag (for quick lookup)
     groupTag: {
       type: String,
-      index: true,
+      lowercase: true,
+      trim: true,
+      default: null,
     },
-    // Read status
-    read: {
-      type: Boolean,
-      default: false,
-      index: true,
+    groupName: {
+      type: String,
+      default: null,
     },
-    // Timestamp when notification was created
-    createdAt: {
+    invitedAt: {
       type: Date,
-      default: Date.now,
-      index: true,
+      default: null,
+    },
+    acknowledgedAt: {
+      type: Date,
+      default: null,
+    },
+    metadata: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
     },
   },
   {
@@ -47,9 +55,23 @@ const notificationSchema = new mongoose.Schema(
   }
 );
 
-// Compound index for efficient queries
-notificationSchema.index({ userId: 1, read: 1, createdAt: -1 });
-notificationSchema.index({ userId: 1, type: 1, groupId: 1 }, { unique: true, sparse: true });
+notificationSchema.index({ userId: 1, createdAt: -1 });
+notificationSchema.index(
+  { userId: 1, type: 1, taskId: 1 },
+  {
+    unique: true,
+    sparse: true,
+    partialFilterExpression: { type: "task_assigned", taskId: { $exists: true } },
+  }
+);
+notificationSchema.index(
+  { userId: 1, type: 1, groupId: 1 },
+  {
+    unique: true,
+    sparse: true,
+    partialFilterExpression: { type: "invitation", groupId: { $exists: true } },
+  }
+);
 
-export default mongoose.model("Notification", notificationSchema);
+export default mongoose.models.Notification || mongoose.model("Notification", notificationSchema);
 
