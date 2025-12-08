@@ -20,7 +20,8 @@
     "jwks-rsa": "^3.2.0",
     "luxon": "^3.5.0",
     "mongoose": "^8.19.2",
-    "node-cron": "^4.2.1"
+    "node-cron": "^4.2.1",
+    "zustand": "^5.0.9"
   },
   "devDependencies": {
     "nodemon": "^3.1.10"
