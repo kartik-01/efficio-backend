@@ -107,4 +107,65 @@ export const calculateAndStoreSummary = async (userId, dateStr, tz = "UTC") => {
     throw error;
   }
 };
+// Get daily summaries for multiple dates in batch
+export const getDailySummaryBatch = asyncHandler(async (req, res) => {
+  const userId = req.auth0Id;
+  const { dates, tz } = req.query; // dates: comma-separated YYYY-MM-DD format
 
+  if (!dates) {
+    return res.status(422).json({ success: false, message: "dates parameter is required (comma-separated YYYY-MM-DD)" });
+  }
+
+  // Parse dates from comma-separated string
+  const dateArray = dates.split(',').map(d => d.trim());
+  
+  // Validate all dates
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+  for (const date of dateArray) {
+    if (!dateRegex.test(date)) {
+      return res.status(422).json({ success: false, message: `Invalid date format: ${date}. Use YYYY-MM-DD` });
+    }
+  }
+
+  const timezone = tz || "UTC";
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const result = {};
+
+  // Fetch all stored summaries in one query
+  const storedSummaries = await DailySummary.find({
+    userId,
+    date: { $in: dateArray }
+  }).lean();
+
+  // Create a map of stored summaries
+  const summaryMap = new Map();
+  storedSummaries.forEach(summary => {
+    summaryMap.set(summary.date, summary);
+  });
+
+  // Process each requested date
+  for (const date of dateArray) {
+    let summary = summaryMap.get(date);
+
+    if (!summary) {
+      // If date is today or in the past, calculate on-demand
+      if (date <= today) {
+        summary = await calculateAndStoreSummary(userId, date, timezone);
+      } else {
+        // Future date - return empty summary
+        summary = {
+          totalMinutes: 0,
+          byCategory: [],
+          focus: { deepMinutes: 0, otherMinutes: 0 },
+        };
+      }
+    }
+
+    // Map to the expected format (only totalMinutes for frontend)
+    result[date] = {
+      totalMinutes: summary.totalMinutes || 0
+    };
+  }
+
+  res.json({ success: true, data: result });
+});
