@@ -32,7 +32,6 @@ const groupSchema = new mongoose.Schema(
     owner: {
       type: String,
       required: [true, "Group owner is required"],
-      index: true,
     },
     // Collaborators/Team members
     collaborators: [
@@ -59,6 +58,12 @@ const groupSchema = new mongoose.Schema(
           enum: ["pending", "accepted", "declined"],
           default: "pending",
         },
+        // Who invited this collaborator (optional)
+        invitedBy: {
+          userId: { type: String },
+          name: { type: String },
+          picture: { type: String, default: null },
+        },
         invitedAt: {
           type: Date,
           default: Date.now,
@@ -76,10 +81,12 @@ const groupSchema = new mongoose.Schema(
 );
 
 // Indexes for better query performance
-groupSchema.index({ owner: 1 });
 groupSchema.index({ "collaborators.userId": 1 });
 groupSchema.index({ "collaborators.status": 1 });
-groupSchema.index({ tag: 1 });
+groupSchema.index({ owner: 1 });
 
-export default mongoose.model("Group", groupSchema);
+// `tag` has `unique: true` in the path definition which creates an index.
+// Avoid declaring a duplicate index here.
+
+export default mongoose.models.Group || mongoose.model("Group", groupSchema);
 

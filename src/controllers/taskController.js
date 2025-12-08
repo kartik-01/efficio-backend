@@ -2,6 +2,16 @@ import Task from "../models/Task.js";
 import User from "../models/User.js";
 import Activity from "../models/Activity.js";
 import Group from "../models/Group.js";
+import Notification from "../models/Notification.js";
+import { sendEventToUser } from "../utils/sseManager.js";
+import { emitActivity } from "../utils/activityEmitter.js";
+
+// Helper: start of today (used for dueDate validation)
+const startOfToday = () => {
+  const d = new Date();
+  d.setHours(0,0,0,0);
+  return d;
+};
 
 // Helper function to get or create user - using atomic operation to prevent duplicates
 const getOrCreateUserFromAuth = async (auth0Id, email, name, picture) => {
@@ -193,9 +203,26 @@ export const getTasks = async (req, res) => {
     const tasks = await Task.find(query)
       .sort({ createdAt: -1 });
 
+    // Compute up-to-date isOverdue flag for each task before returning
+    const today = startOfToday();
+    const tasksForResponse = tasks.map((t) => {
+      const obj = t.toObject ? t.toObject() : { ...t };
+      try {
+        if (obj.dueDate) {
+          const due = new Date(obj.dueDate);
+          obj.isOverdue = due < today && obj.status !== 'completed';
+        } else {
+          obj.isOverdue = false;
+        }
+      } catch (e) {
+        obj.isOverdue = false;
+      }
+      return obj;
+    });
+
     res.status(200).json({
       success: true,
-      data: tasks,
+      data: tasksForResponse,
     });
   } catch (error) {
     res.status(500).json({
@@ -232,9 +259,22 @@ export const getTaskById = async (req, res) => {
       });
     }
 
+    // Ensure returned task has up-to-date isOverdue flag
+    const taskObj = task.toObject ? task.toObject() : { ...task };
+    try {
+      if (taskObj.dueDate) {
+        const due = new Date(taskObj.dueDate);
+        taskObj.isOverdue = due < startOfToday() && taskObj.status !== 'completed';
+      } else {
+        taskObj.isOverdue = false;
+      }
+    } catch (e) {
+      taskObj.isOverdue = false;
+    }
+
     res.status(200).json({
       success: true,
-      data: task,
+      data: taskObj,
     });
   } catch (error) {
     res.status(500).json({
@@ -290,9 +330,9 @@ export const createTask = async (req, res) => {
       // If assignedTo is provided, get user info from group collaborators
       if (restBody.assignedTo && Array.isArray(restBody.assignedTo) && restBody.assignedTo.length > 0) {
         // Normalize assignedTo to ensure all values are strings (auth0Id)
-        normalizedAssignedTo = restBody.assignedTo.map(id => id?.toString().trim()).filter(Boolean);
+        const candidateIds = restBody.assignedTo.map(id => id?.toString().trim()).filter(Boolean);
         
-        for (const userId of normalizedAssignedTo) {
+        for (const userId of candidateIds) {
           // Check if it's the owner
           if (userId === group.owner || userId === group.owner.toString().trim()) {
             const ownerUser = await User.findOne({ auth0Id: userId });
@@ -322,12 +362,13 @@ export const createTask = async (req, res) => {
             }
           }
         }
+        // Only keep the validated assignee IDs (those we resolved into assignedUsersData)
+        normalizedAssignedTo = assignedUsersData.map(u => u.userId);
       }
     } else if (restBody.assignedTo && Array.isArray(restBody.assignedTo) && restBody.assignedTo.length > 0) {
       // For personal tasks, normalize and get user info from User model
-      normalizedAssignedTo = restBody.assignedTo.map(id => id?.toString().trim()).filter(Boolean);
-      
-      for (const userId of normalizedAssignedTo) {
+      const candidateIds = restBody.assignedTo.map(id => id?.toString().trim()).filter(Boolean);
+      for (const userId of candidateIds) {
         const userIdNormalized = userId.toString().trim();
         const assignedUser = await User.findOne({ auth0Id: userIdNormalized });
         if (assignedUser) {
@@ -339,7 +380,9 @@ export const createTask = async (req, res) => {
           });
         }
       }
-    }
+        // Normalize assignedTo to the validated list
+        normalizedAssignedTo = assignedUsersData.map(u => u.userId);
+      }
 
     // Build taskData object with normalized values
     const taskData = {
@@ -350,22 +393,119 @@ export const createTask = async (req, res) => {
       assignedUsers: assignedUsersData, // Store assigned user info
     };
 
+    // Validate dueDate unless client explicitly allows backdate
+    if (taskData.dueDate) {
+      const due = new Date(taskData.dueDate);
+      if (!req.body.allowBackdate && due < startOfToday()) {
+        return res.status(400).json({
+          success: false,
+          message: 'Due date cannot be in the past. Set allowBackdate=true to permit past dates.'
+        });
+      }
+    }
+
     const task = await Task.create(taskData);
 
     // Create activity for task creation
-    await Activity.create({
+    const createdActivity = await Activity.create({
       type: "task_created",
       taskId: task._id,
       taskTitle: task.title,
       userId: req.auth0Id,
       userName: req.userName || user.name || "Unknown",
+      // Prefer the server-stored customPicture/picture so updates made in-app
+      // are used immediately instead of relying on the Auth0 token picture
+      userPicture: (user && (user.customPicture || user.picture)) || req.userPicture || null,
       groupTag: normalizedGroupTag,
       timestamp: new Date(),
     });
 
+    // Emit activity to relevant group members (non-blocking)
+    try {
+      await emitActivity(createdActivity);
+    } catch (e) {
+      // ignore emitter errors
+    }
+
+    // Upsert task assignment notifications for assignees and emit SSE
+    try {
+      if (task.assignedTo && Array.isArray(task.assignedTo) && task.assignedTo.length > 0) {
+        // Try to find groupId if available
+        const group = task.groupTag ? await Group.findOne({ tag: task.groupTag }) : null;
+        for (const assignee of task.assignedTo) {
+          const userIdStr = assignee ? assignee.toString().trim() : null;
+          if (!userIdStr) continue;
+          try {
+            await Notification.findOneAndUpdate(
+              { userId: userIdStr, type: 'task_assigned', taskId: task._id },
+              {
+                userId: userIdStr,
+                type: 'task_assigned',
+                taskId: task._id,
+                groupTag: task.groupTag,
+                groupName: group?.name || null,
+                taskTitle: task.title,
+                acknowledgedAt: null,
+              },
+              { upsert: true, new: true }
+            );
+            // Emit SSE notification to user
+            try { sendEventToUser(userIdStr, 'notification', { type: 'task_assigned', taskId: task._id, taskTitle: task.title, groupTag: task.groupTag }); } catch (e) {}
+          } catch (e) {
+            // continue on errors per-user
+            console.warn('[notifications] failed to upsert for assignee', userIdStr, e.message || e);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[notifications] createTask notification pass failed', e.message || e);
+    }
+
+    // Emit task_updated to assignees so they receive the new task immediately
+    try {
+      const taskPayload = task.toObject ? task.toObject() : { ...task };
+      // Compute isOverdue for payload
+      try {
+        if (taskPayload.dueDate) {
+          const due = new Date(taskPayload.dueDate);
+          taskPayload.isOverdue = due < startOfToday() && taskPayload.status !== 'completed';
+        } else {
+          taskPayload.isOverdue = false;
+        }
+      } catch (e) {
+        taskPayload.isOverdue = false;
+      }
+
+      const recipients = new Set();
+      (taskPayload.assignedTo || []).forEach(a => { if (a) recipients.add(a.toString().trim()); });
+      // Also include owner if needed (owner is the creator) - exclude actor to avoid duplicate
+      if (taskPayload.userId) recipients.add(taskPayload.userId.toString().trim());
+      // Exclude the actor (creator)
+      recipients.delete(req.auth0Id && req.auth0Id.toString().trim());
+
+      for (const rid of recipients) {
+        try { sendEventToUser(rid, 'task_updated', taskPayload); } catch (e) {}
+      }
+    } catch (e) {
+      console.warn('[sse] failed to emit task_updated on create', e.message || e);
+    }
+
+    // Compute isOverdue before returning
+    const taskObj = task.toObject ? task.toObject() : { ...task };
+    try {
+      if (taskObj.dueDate) {
+        const due = new Date(taskObj.dueDate);
+        taskObj.isOverdue = due < startOfToday() && taskObj.status !== 'completed';
+      } else {
+        taskObj.isOverdue = false;
+      }
+    } catch (e) {
+      taskObj.isOverdue = false;
+    }
+
     res.status(201).json({
       success: true,
-      data: task,
+      data: taskObj,
       message: "Task created successfully",
     });
   } catch (error) {
@@ -467,8 +607,8 @@ export const updateTask = async (req, res) => {
         }
       }
       
-      // Update assignedTo with normalized values
-      updateData.assignedTo = normalizedAssignedTo;
+      // Update assignedTo with only the validated user IDs (from assignedUsersData)
+      updateData.assignedTo = assignedUsersData.length > 0 ? assignedUsersData.map(u => u.userId) : [];
       updateData.assignedUsers = assignedUsersData;
     }
 
@@ -506,6 +646,17 @@ export const updateTask = async (req, res) => {
       addStatusChangeTimestamps(task, updateData);
     }
 
+    // Validate dueDate on update unless allowBackdate is explicitly provided
+    if (updateData.dueDate) {
+      const due = new Date(updateData.dueDate);
+      if (!req.body.allowBackdate && due < startOfToday()) {
+        return res.status(400).json({
+          success: false,
+          message: 'Due date cannot be in the past. Set allowBackdate=true to permit past dates.'
+        });
+      }
+    }
+
     const updatedTask = await Task.findByIdAndUpdate(
       req.params.id,
       updateData,
@@ -517,20 +668,103 @@ export const updateTask = async (req, res) => {
 
     // Create activity for task update (if significant changes)
     if (updateData.title || updateData.description || updateData.status) {
-      await Activity.create({
+      const updatedActivity = await Activity.create({
         type: "task_updated",
         taskId: updatedTask._id,
         taskTitle: updatedTask.title,
         userId: req.auth0Id,
         userName: req.userName || user.name || "Unknown",
+        userPicture: (user && (user.customPicture || user.picture)) || req.userPicture || null,
         groupTag: updatedTask.groupTag,
         timestamp: new Date(),
       });
+
+      // Emit activity to relevant group members (non-blocking)
+      try {
+        await emitActivity(updatedActivity);
+      } catch (e) {
+        // ignore emitter errors
+      }
+    }
+
+    // Compute isOverdue before returning
+    const updatedObj = updatedTask.toObject ? updatedTask.toObject() : { ...updatedTask };
+    try {
+      if (updatedObj.dueDate) {
+        const due = new Date(updatedObj.dueDate);
+        updatedObj.isOverdue = due < startOfToday() && updatedObj.status !== 'completed';
+      } else {
+        updatedObj.isOverdue = false;
+      }
+    } catch (e) {
+      updatedObj.isOverdue = false;
+    }
+
+    // Handle notifications for added/removed assignees
+    try {
+      const oldAssigned = (task.assignedTo || []).map(a => a ? a.toString().trim() : '').filter(Boolean);
+      const newAssigned = (updatedTask.assignedTo || []).map(a => a ? a.toString().trim() : '').filter(Boolean);
+
+      const added = newAssigned.filter(a => !oldAssigned.includes(a));
+      const removed = oldAssigned.filter(a => !newAssigned.includes(a));
+
+      // Upsert notifications for added assignees
+      if (added.length > 0) {
+        const group = updatedTask.groupTag ? await Group.findOne({ tag: updatedTask.groupTag }) : null;
+        for (const userIdStr of added) {
+          try {
+            await Notification.findOneAndUpdate(
+              { userId: userIdStr, type: 'task_assigned', taskId: updatedTask._id },
+              {
+                userId: userIdStr,
+                type: 'task_assigned',
+                taskId: updatedTask._id,
+                groupTag: updatedTask.groupTag,
+                groupName: group?.name || null,
+                taskTitle: updatedTask.title,
+                acknowledgedAt: null,
+              },
+              { upsert: true, new: true }
+            );
+            try { sendEventToUser(userIdStr, 'notification', { type: 'task_assigned', taskId: updatedTask._id, taskTitle: updatedTask.title, groupTag: updatedTask.groupTag }); } catch (e) {}
+          } catch (e) {
+            console.warn('[notifications] upsert for added assignee failed', userIdStr, e.message || e);
+          }
+        }
+      }
+
+      // Remove notifications for removed assignees and emit removed event
+      if (removed.length > 0) {
+        for (const userIdStr of removed) {
+          try {
+            await Notification.deleteMany({ userId: userIdStr, type: 'task_assigned', taskId: updatedTask._id });
+            try { sendEventToUser(userIdStr, 'notification_removed', { type: 'task_assigned', taskId: updatedTask._id }); } catch (e) {}
+          } catch (e) {
+            console.warn('[notifications] delete for removed assignee failed', userIdStr, e.message || e);
+          }
+        }
+      }
+
+      // Emit task_updated event to interested users (owner + assignees), excluding actor
+      try {
+        const recipients = new Set();
+        if (updatedTask.userId) recipients.add(updatedTask.userId.toString().trim());
+        (updatedTask.assignedTo || []).forEach(a => { if (a) recipients.add(a.toString().trim()); });
+        recipients.delete(req.auth0Id && req.auth0Id.toString().trim());
+        const payload = updatedObj;
+        for (const rid of recipients) {
+          try { sendEventToUser(rid, 'task_updated', payload); } catch (e) {}
+        }
+      } catch (e) {
+        console.warn('[sse] failed to emit task_updated', e.message || e);
+      }
+    } catch (e) {
+      console.warn('[notifications] post-update notification pass failed', e.message || e);
     }
 
     res.status(200).json({
       success: true,
-      data: updatedTask,
+      data: updatedObj,
       message: "Task updated successfully",
     });
   } catch (error) {
@@ -553,16 +787,52 @@ export const deleteTask = async (req, res) => {
       req.userPicture
     );
 
-    // Only owner can delete tasks
-    const task = await Task.findOne({
-      _id: req.params.id,
-      userId: req.auth0Id, // Only owner can delete (using auth0Id)
-    });
+    // Find the task by id first
+    const task = await Task.findById(req.params.id);
 
     if (!task) {
       return res.status(404).json({
         success: false,
-        message: "Task not found or you don't have permission to delete",
+        message: "Task not found",
+      });
+    }
+
+    // Permission check: allow owner or collaborators with editor/admin role
+    const taskUserIdNormalized = task.userId ? task.userId.toString().trim() : '';
+    const currentUserId = req.auth0Id && req.auth0Id.toString().trim();
+
+    let hasPermission = false;
+
+    if (taskUserIdNormalized && currentUserId && taskUserIdNormalized === currentUserId) {
+      hasPermission = true; // owner
+    }
+
+    // If not owner and task belongs to a group, check group membership/role
+    if (!hasPermission && task.groupTag && task.groupTag !== '@personal') {
+      const group = await Group.findOne({ tag: task.groupTag });
+      if (group) {
+        if (group.owner && group.owner.toString().trim() === currentUserId) {
+          hasPermission = true;
+        } else {
+          const collaborator = group.collaborators.find(c => c.userId === currentUserId || c.userId?.toString().trim() === currentUserId);
+          if (collaborator && ['editor', 'admin'].includes(collaborator.role)) {
+            hasPermission = true;
+          }
+        }
+      }
+    }
+
+    // Also allow task-level collaborators array (if present) with editor/admin
+    if (!hasPermission && task.collaborators && Array.isArray(task.collaborators)) {
+      const taskCollab = task.collaborators.find(c => (c.user && c.user.toString().trim() === currentUserId) && ['editor', 'admin'].includes(c.role));
+      if (taskCollab) hasPermission = true;
+    }
+
+    if (!hasPermission) {
+      // Return 403 to indicate authenticated but forbidden (clearer for debugging)
+      return res.status(403).json({
+        success: false,
+        message: "You don't have permission to delete this task",
       });
     }
 
@@ -574,15 +844,51 @@ export const deleteTask = async (req, res) => {
     await Task.findByIdAndDelete(req.params.id);
 
     // Create activity for task deletion
-    await Activity.create({
+    const deletedActivity = await Activity.create({
       type: "task_deleted",
       taskId: task._id,
       taskTitle: taskTitle,
       userId: req.auth0Id,
       userName: req.userName || user.name || "Unknown",
+      userPicture: (user && (user.customPicture || user.picture)) || req.userPicture || null,
       groupTag: groupTag,
       timestamp: new Date(),
     });
+
+    // Emit activity to relevant group members (non-blocking)
+    try {
+      await emitActivity(deletedActivity);
+    } catch (e) {
+      // ignore emitter errors
+    }
+
+    // Notify assignees and owner about deletion and remove any lingering notifications
+    try {
+      const recipients = new Set();
+      if (task.userId) recipients.add(task.userId.toString().trim());
+      (task.assignedTo || []).forEach(a => { if (a) recipients.add(a.toString().trim()); });
+      // Exclude actor (deleter)
+      recipients.delete(req.auth0Id && req.auth0Id.toString().trim());
+
+      // Delete any task_assigned notifications for this task for all users
+      try {
+        await Notification.deleteMany({ type: 'task_assigned', taskId: task._id });
+      } catch (err) {
+        console.warn('[notifications] failed to bulk-delete task_assigned notifications on task delete', err && err.message ? err.message : err);
+      }
+
+      // Emit notification_removed and task_deleted to recipients
+      for (const rid of recipients) {
+        try {
+          try { sendEventToUser(rid, 'notification_removed', { type: 'task_assigned', taskId: task._id }); } catch (e) {}
+          try { sendEventToUser(rid, 'task_deleted', { taskId: task._id, groupTag }); } catch (e) {}
+        } catch (e) {
+          // ignore per-user errors
+        }
+      }
+    } catch (e) {
+      console.warn('[sse] task delete notify failed', e && e.message ? e.message : e);
+    }
 
     res.status(200).json({
       success: true,
@@ -725,25 +1031,78 @@ export const updateTaskStatus = async (req, res) => {
     );
 
     // Create activity for task moved (if status changed)
+    let createdActivity = null;
     if (task.status !== status) {
-      await Activity.create({
+      createdActivity = await Activity.create({
         type: "task_moved",
         taskId: updatedTask._id,
         taskTitle: updatedTask.title,
         userId: req.auth0Id,
         userName: req.userName || user.name || "Unknown",
+        // Include the user's picture so the frontend can render it immediately
+        userPicture: req.userPicture || (user && (user.customPicture || user.picture)) || null,
         groupTag: updatedTask.groupTag,
         fromStatus: task.status,
         toStatus: status,
         timestamp: new Date(),
       });
+
+      // Emit activity to relevant group members (non-blocking)
+      try {
+        await emitActivity(createdActivity);
+      } catch (e) {
+        // ignore emitter errors
+      }
     }
 
-    res.status(200).json({
-      success: true,
-      data: updatedTask,
-      message: "Task status updated successfully",
-    });
+    // Return the updated task and the created activity (if any) so the frontend can
+    // immediately prepend the activity to the sidebar without re-fetching activities.
+    // Compute isOverdue for updatedTask before returning
+    const updatedObj = updatedTask.toObject ? updatedTask.toObject() : { ...updatedTask };
+    try {
+      if (updatedObj.dueDate) {
+        const due = new Date(updatedObj.dueDate);
+        updatedObj.isOverdue = due < startOfToday() && updatedObj.status !== 'completed';
+      } else {
+        updatedObj.isOverdue = false;
+      }
+    } catch (e) {
+      updatedObj.isOverdue = false;
+    }
+
+    const responsePayload = { success: true, data: updatedObj, message: "Task status updated successfully" };
+
+    if (createdActivity) {
+      // Ensure the returned activity includes the server-stored user picture
+      // (prefer `customPicture` then stored `picture`). Fetch the freshest user
+      // record to avoid returning the Auth0 token picture when the user has
+      // recently updated their portal avatar.
+      try {
+        const freshestUser = await User.findOne({ auth0Id: req.auth0Id }).select('customPicture picture');
+        const userPic = (freshestUser && (freshestUser.customPicture || freshestUser.picture)) || null;
+        const activityObj = createdActivity.toObject ? createdActivity.toObject() : { ...createdActivity };
+        activityObj.userPicture = userPic;
+        responsePayload.activity = activityObj;
+      } catch (err) {
+        // If enrichment fails, still return the created activity as-is
+        responsePayload.activity = createdActivity;
+      }
+    }
+
+    // Emit task_updated SSE to owner and assignees (excluding actor)
+    try {
+      const recipients = new Set();
+      if (updatedObj.userId) recipients.add(updatedObj.userId.toString().trim());
+      (updatedObj.assignedTo || []).forEach(a => { if (a) recipients.add(a.toString().trim()); });
+      recipients.delete(req.auth0Id && req.auth0Id.toString().trim());
+      for (const rid of recipients) {
+        try { sendEventToUser(rid, 'task_updated', updatedObj); } catch (e) {}
+      }
+    } catch (e) {
+      console.warn('[sse] task status update emit failed', e.message || e);
+    }
+
+    res.status(200).json(responsePayload);
   } catch (error) {
     res.status(400).json({
       success: false,
@@ -791,9 +1150,22 @@ export const updateTaskProgress = async (req, res) => {
       }
     );
 
+    // Compute isOverdue before returning
+    const updatedObj = updatedTask.toObject ? updatedTask.toObject() : { ...updatedTask };
+    try {
+      if (updatedObj.dueDate) {
+        const due = new Date(updatedObj.dueDate);
+        updatedObj.isOverdue = due < startOfToday() && updatedObj.status !== 'completed';
+      } else {
+        updatedObj.isOverdue = false;
+      }
+    } catch (e) {
+      updatedObj.isOverdue = false;
+    }
+
     res.status(200).json({
       success: true,
-      data: updatedTask,
+      data: updatedObj,
       message: "Task progress updated successfully",
     });
   } catch (error) {

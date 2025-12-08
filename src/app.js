@@ -2,12 +2,13 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import { connectDB } from "./config/db.js";
-import { ensureUserIndexes } from "./utils/ensureIndexes.js";
+import { ensureUserIndexes, ensureNotificationIndexes } from "./utils/ensureIndexes.js";
 import userRoutes from "./routes/userRoutes.js";
 import taskRoutes from "./routes/taskRoutes.js";
 import groupRoutes from "./routes/groupRoutes.js";
 import activityRoutes from "./routes/activityRoutes.js";
 import notificationRoutes from "./routes/notificationRoutes.js";
+import eventsRoutes from "./routes/eventsRoutes.js";
 import { authenticate } from "./middleware/auth.js";
 import timeRoutes from "./time-tracker/routes/timeRoutes.js";
 import { startDailySummaryJob } from "./time-tracker/jobs/dailySummaryJob.js";
@@ -19,6 +20,7 @@ connectDB()
   .then(async () => {
     // Ensure unique indexes exist after connection
     await ensureUserIndexes();
+    await ensureNotificationIndexes();
     // Start scheduled jobs
     startDailySummaryJob();
   })
@@ -70,6 +72,7 @@ app.use("/api/tasks", taskRoutes);
 app.use("/api/groups", groupRoutes);
 app.use("/api/activities", activityRoutes);
 app.use("/api/notifications", notificationRoutes);
+app.use("/api/events", eventsRoutes);
 app.use("/api/time", authenticate, timeRoutes);
 const PORT = process.env.PORT || 4000; // Using port 4000
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));

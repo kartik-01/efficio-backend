@@ -2,6 +2,8 @@ import Group from "../models/Group.js";
 import User from "../models/User.js";
 import Task from "../models/Task.js";
 import Activity from "../models/Activity.js";
+import Notification from "../models/Notification.js";
+import { sendEventToUser } from "../utils/sseManager.js";
 
 // Helper function to get or create user (preserves custom name and picture)
 const getOrCreateUserFromAuth = async (auth0Id, email, name, picture) => {
@@ -86,7 +88,7 @@ export const createGroup = async (req, res) => {
       req.userPicture
     );
 
-    const { name, tag, collaborators = [] } = req.body;
+    const { name, tag, collaborators = [], color } = req.body;
 
     if (!name || !tag) {
       return res.status(400).json({
@@ -116,6 +118,11 @@ export const createGroup = async (req, res) => {
         status: "accepted",
         invitedAt: new Date(),
         acceptedAt: new Date(),
+        invitedBy: {
+          userId: req.auth0Id,
+          name: req.userName || user.name || 'Unknown',
+          picture: req.userPicture || null,
+        },
       },
       // Add other collaborators with pending status
       ...collaborators.map(collab => ({
@@ -125,16 +132,22 @@ export const createGroup = async (req, res) => {
         role: collab.role || "editor",
         status: "pending",
         invitedAt: new Date(),
+        invitedBy: {
+          userId: req.auth0Id,
+          name: req.userName || user.name || 'Unknown',
+          picture: req.userPicture || null,
+        },
         acceptedAt: null,
       })),
     ];
 
-    // Create group
+    // Create group (include color if provided; otherwise schema default applies)
     const group = await Group.create({
       name,
       tag: normalizedTag,
       owner: req.auth0Id,
       collaborators: collaboratorsList,
+      color: color ? color : undefined,
     });
 
     // Add group to owner's groups array
@@ -149,6 +162,7 @@ export const createGroup = async (req, res) => {
       type: "member_added",
       userId: req.auth0Id,
       userName: req.userName || user.name || "Unknown",
+      userPicture: (user && (user.customPicture || user.picture)) || req.userPicture || null,
       groupTag: normalizedTag,
       timestamp: new Date(),
     });
@@ -202,11 +216,13 @@ export const getUserGroups = async (req, res) => {
       group.collaborators.forEach(c => allUserIds.add(c.userId));
     });
 
-    // Fetch user pictures for all users
-    const users = await User.find({ auth0Id: { $in: Array.from(allUserIds) } }).select('auth0Id picture customPicture');
+    // Fetch user pictures and names for all users
+    const users = await User.find({ auth0Id: { $in: Array.from(allUserIds) } }).select('auth0Id picture customPicture name');
     const userPictureMap = new Map();
+    const userNameMap = new Map();
     users.forEach(u => {
       userPictureMap.set(u.auth0Id, u.customPicture || u.picture || null);
+      userNameMap.set(u.auth0Id, u.name || null);
     });
 
     // Populate pictures in groups
@@ -219,10 +235,20 @@ export const getUserGroups = async (req, res) => {
       // Add collaborator pictures
       groupObj.collaborators = groupObj.collaborators.map(collab => {
         const picture = userPictureMap.get(collab.userId) || null;
-        return {
+        const collabObj = {
           ...collab,
           picture: picture,
         };
+        // If collaborator has invitedBy info, prefer the inviter's current name/picture when available
+        if (collab.invitedBy && collab.invitedBy.userId) {
+          const inviterId = collab.invitedBy.userId;
+          collabObj.invitedBy = {
+            userId: inviterId,
+            name: userNameMap.get(inviterId) || collab.invitedBy.name || null,
+            picture: userPictureMap.get(inviterId) || collab.invitedBy.picture || null,
+          };
+        }
+        return collabObj;
       });
       return groupObj;
     });
@@ -249,26 +275,42 @@ export const getUserGroups = async (req, res) => {
       success: true,
       data: {
         groups: groupsWithPictures,
-        pendingInvitations: pendingInvitationsWithPictures.map(group => ({
-          id: group._id,
-          name: group.name,
-          tag: group.tag,
-          owner: {
-            userId: group.owner,
-            name: group.collaborators.find(c => c.userId === group.owner && c.status === "accepted")?.name || "Owner",
-            email: group.collaborators.find(c => c.userId === group.owner && c.status === "accepted")?.email || "",
-            picture: group.ownerPicture,
-          },
-          invitedBy: group.collaborators.find(c => 
-            c.userId === req.auth0Id && c.status === "pending"
-          ),
-          role: group.collaborators.find(c => 
-            c.userId === req.auth0Id && c.status === "pending"
-          )?.role,
-          invitedAt: group.collaborators.find(c => 
-            c.userId === req.auth0Id && c.status === "pending"
-          )?.invitedAt,
-        })),
+        pendingInvitations: pendingInvitationsWithPictures.map(group => {
+          const inviteCollab = group.collaborators.find(c => c.userId === req.auth0Id && c.status === 'pending');
+
+          // Determine inviter info: prefer invitedBy.userId if recorded, otherwise fallback to group owner
+          let inviter = null;
+          if (inviteCollab && (inviteCollab.invitedBy && inviteCollab.invitedBy.userId)) {
+            const inviterId = inviteCollab.invitedBy.userId;
+            inviter = {
+              userId: inviterId,
+              name: userNameMap.get(inviterId) || inviteCollab.invitedBy.name || null,
+              picture: userPictureMap.get(inviterId) || inviteCollab.invitedBy.picture || null,
+            };
+          } else if (group.owner) {
+            const ownerId = group.owner;
+            inviter = {
+              userId: ownerId,
+              name: userNameMap.get(ownerId) || group.collaborators.find(c => c.userId === ownerId && c.status === 'accepted')?.name || 'Owner',
+              picture: userPictureMap.get(ownerId) || group.ownerPicture || null,
+            };
+          }
+
+          return {
+            id: group._id,
+            name: group.name,
+            tag: group.tag,
+            owner: {
+              userId: group.owner,
+              name: group.collaborators.find(c => c.userId === group.owner && c.status === 'accepted')?.name || 'Owner',
+              email: group.collaborators.find(c => c.userId === group.owner && c.status === 'accepted')?.email || '',
+              picture: group.ownerPicture,
+            },
+            invitedBy: inviter,
+            role: inviteCollab?.role,
+            invitedAt: inviteCollab?.invitedAt,
+          };
+        }),
       },
     });
   } catch (error) {
@@ -479,12 +521,23 @@ export const inviteUser = async (req, res) => {
         // Update name/email in case they changed
         existingCollaborator.name = name;
         existingCollaborator.email = email;
+        // Update inviter info
+        existingCollaborator.invitedBy = {
+          userId: req.auth0Id,
+          name: req.userName || user.name || 'Unknown',
+          picture: req.userPicture || null,
+        };
         await group.save();
       } else if (existingCollaborator.status === "pending") {
         // Already has pending invitation, just update role/name/email
         existingCollaborator.role = role;
         existingCollaborator.name = name;
         existingCollaborator.email = email;
+        existingCollaborator.invitedBy = {
+          userId: req.auth0Id,
+          name: req.userName || user.name || 'Unknown',
+          picture: req.userPicture || null,
+        };
         await group.save();
       } else if (existingCollaborator.status === "accepted") {
         // User is already an accepted member
@@ -503,11 +556,42 @@ export const inviteUser = async (req, res) => {
         status: "pending",
         invitedAt: new Date(),
         acceptedAt: null,
+        invitedBy: {
+          userId: req.auth0Id,
+          name: req.userName || user.name || 'Unknown',
+          picture: req.userPicture || null,
+        },
       });
       await group.save();
     }
 
     const updatedGroup = await Group.findById(req.params.id);
+
+    // Upsert invitation notification for the invited user and emit SSE
+    try {
+      await Notification.findOneAndUpdate(
+        { userId: userId, type: 'invitation', groupId: updatedGroup._id },
+        {
+          userId: userId,
+          type: 'invitation',
+          groupId: updatedGroup._id,
+          groupTag: updatedGroup.tag,
+          groupName: updatedGroup.name,
+          invitedAt: new Date(),
+          acknowledgedAt: null,
+          metadata: {
+            invitedBy: {
+              userId: req.auth0Id,
+              name: req.userName || user.name || 'Unknown',
+            },
+          },
+        },
+        { upsert: true, new: true }
+      );
+      try { sendEventToUser(userId, 'notification', { type: 'invitation', groupId: updatedGroup._id, groupName: updatedGroup.name, groupTag: updatedGroup.tag }); } catch (e) {}
+    } catch (e) {
+      console.warn('[notifications] invite upsert failed', e.message || e);
+    }
 
     res.status(200).json({
       success: true,
@@ -578,9 +662,17 @@ export const acceptInvitation = async (req, res) => {
         type: activityType,
         userId: req.auth0Id,
         userName: req.userName || user.name || "Unknown",
+        userPicture: (user && (user.customPicture || user.picture)) || req.userPicture || null,
         groupTag: group.tag,
         timestamp: new Date(),
       });
+    }
+
+    // Clear pending invitation notifications for this group
+    try {
+      await Notification.deleteMany({ userId: req.auth0Id, type: 'invitation', groupId: group._id });
+    } catch (e) {
+      console.warn('[notifications] failed to delete invite notification on accept', e.message || e);
     }
 
     res.status(200).json({
@@ -628,6 +720,13 @@ export const declineInvitation = async (req, res) => {
     if (collaborator) {
       collaborator.status = "declined";
       await group.save();
+    }
+
+    // Remove pending notification since invite is no longer actionable
+    try {
+      await Notification.deleteMany({ userId: req.auth0Id, type: 'invitation', groupId: group._id });
+    } catch (e) {
+      console.warn('[notifications] failed to delete invite notification on decline', e.message || e);
     }
 
     res.status(200).json({
@@ -705,6 +804,7 @@ export const updateMemberRole = async (req, res) => {
       type: "member_role_changed",
       userId: req.auth0Id,
       userName: req.userName || user.name || "Unknown",
+      userPicture: (user && (user.customPicture || user.picture)) || req.userPicture || null,
       groupTag: group.tag,
       timestamp: new Date(),
     });
@@ -777,6 +877,7 @@ export const exitGroup = async (req, res) => {
       type: "member_removed",
       userId: req.auth0Id,
       userName: req.userName || user.name || "Unknown",
+      userPicture: (user && (user.customPicture || user.picture)) || req.userPicture || null,
       groupTag: group.tag,
       timestamp: new Date(),
     });
@@ -851,6 +952,7 @@ export const removeMember = async (req, res) => {
       type: "member_removed",
       userId: req.auth0Id,
       userName: req.userName || user.name || "Unknown",
+      userPicture: (user && (user.customPicture || user.picture)) || req.userPicture || null,
       groupTag: group.tag,
       timestamp: new Date(),
     });
