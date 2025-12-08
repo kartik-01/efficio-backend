@@ -6,7 +6,7 @@ const timePlanSchema = new mongoose.Schema(
     taskId:    { type: mongoose.Schema.Types.ObjectId, ref: "Task", default: null },
     taskTitle: { type: String, default: null },
     groupTag:  { type: String, default: "@personal" },
-    categoryId:{ type: String, required: true, enum: ["work","learning","admin","health","personal","rest"] },
+    categoryId:{ type: String, required: true, enum: ["work","personal","errands","design","engineering","marketing","finance","rest","health","learning","admin","other"] },
 
     // Planned window
     startTime: { type: Date, required: true, index: true },
