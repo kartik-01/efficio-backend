@@ -46,6 +46,11 @@ const taskSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+    documentationLink: {
+      type: String,
+      default: "",
+      trim: true,
+    },
     progress: {
       type: Number,
       default: undefined,
