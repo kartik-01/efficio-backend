@@ -5,8 +5,9 @@ import { dayWindow, rangeWindow } from "../utils/timeRange.js";
 
 export const getRunning = asyncHandler(async (req, res) => {
   const doc = await TimeSession.findOne({ userId: req.auth0Id, endTime: null }).lean();
-  if (!doc) return res.status(404).json({ success: false, message: "No running session" });
-  res.json({ success: true, data: doc });
+  // Return 200 with null data instead of 404 to avoid console errors in browser
+  // Frontend handles null as "no running session"
+  res.json({ success: true, data: doc || null });
 });
 
 export const startSession = asyncHandler(async (req, res) => {
