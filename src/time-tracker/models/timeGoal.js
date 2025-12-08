@@ -6,7 +6,7 @@ const timeGoalSchema = new mongoose.Schema(
     categoryId: {
       type: String,
       required: true,
-      enum: ["work","learning","admin","health","personal","rest"],
+      enum: ["work","personal","errands","design","engineering","marketing","finance","rest","health","learning","admin","other"],
     },
     period: { type: String, enum: ["daily","weekly"], required: true },
     targetMinutes: { type: Number, required: true, min: 1 },

@@ -7,7 +7,7 @@ const userCategoryOverrideSchema = new mongoose.Schema(
     categoryId: {
       type: String,
       required: true,
-      enum: ["work","learning","admin","health","personal","rest"],
+      enum: ["work","personal","errands","design","engineering","marketing","finance","rest","health","learning","admin","other"],
     },
   },
   { timestamps: true }

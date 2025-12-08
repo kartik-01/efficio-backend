@@ -10,7 +10,7 @@ const timeSessionSchema = new mongoose.Schema(
     categoryId: {
       type: String,
       required: true,            // one of fixed categories
-      enum: ["work","learning","admin","health","personal","rest"],
+      enum: ["work","personal","errands","design","engineering","marketing","finance","rest","health","learning","admin","other"],
       index: true,
     },
 
