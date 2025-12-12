@@ -73,38 +73,3 @@ Required environment variables:
 npm install
 npm run dev  # Starts with nodemon for auto-reload
 ```
-
-## Deployment to Render
-
-1. **Push your code to GitHub** (if not already done)
-
-2. **Create a new Web Service on Render:**
-   - Go to https://render.com
-   - Click "New +" → "Web Service"
-   - Connect your GitHub repository
-   - Select the `efficio-backend` directory
-
-3. **Configure the service:**
-   - **Name:** efficio-backend
-   - **Environment:** Node
-   - **Build Command:** `npm install`
-   - **Start Command:** `npm start`
-   - **Plan:** Free (or paid for always-on)
-
-4. **Set Environment Variables in Render Dashboard:**
-   - Go to your service → Environment tab
-   - Add the following variables:
-     - `MONGO_URI` - Your MongoDB Atlas connection string (from your local .env)
-     - `FRONTEND_URL` - Your Netlify frontend URL (e.g., `https://your-app.netlify.app`)
-     - `NODE_ENV` - Set to `production`
-     - `PORT` - Render sets this automatically, but you can set to 4000
-
-5. **Deploy:**
-   - Click "Create Web Service"
-   - Render will build and deploy your backend
-   - Your backend URL will be something like: `https://efficio-backend.onrender.com`
-
-6. **Update Frontend:**
-   - In Netlify, go to Site settings → Environment variables
-   - Add `API_BASE_URL` with your Render backend URL (e.g., `https://efficio-backend.onrender.com/api`)
-   - Redeploy your frontend
